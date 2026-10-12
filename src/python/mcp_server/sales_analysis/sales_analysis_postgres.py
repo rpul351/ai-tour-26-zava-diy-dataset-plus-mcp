@@ -721,6 +721,272 @@ class PostgreSQLSchemaProvider:
             if conn:
                 await self.release_connection(conn)
 
+    async def get_inventory_optimization_overview(
+        self,
+        rls_user_id: str,
+        store_id: Optional[int] = None,
+        days_window: int = 30,
+        warning_days: int = 7,
+        danger_days: int = 3,
+    ) -> str:
+        """Return stock health for products and stores with recent sales context."""
+        conn = None
+        try:
+            conn = await self.get_connection()
+            await conn.execute(
+                "SELECT set_config('app.current_rls_user_id', $1, false)",
+                rls_user_id,
+            )
+
+            sql = """
+                WITH recent_sales AS (
+                    SELECT
+                        oi.product_id,
+                        oi.store_id,
+                        SUM(oi.quantity)::numeric AS sold_units,
+                        (SUM(oi.quantity)::numeric / GREATEST($1::int, 1)) AS avg_daily_units
+                    FROM retail.order_items oi
+                    JOIN retail.orders o ON o.order_id = oi.order_id
+                    WHERE o.order_date >= CURRENT_DATE - ($1::int * INTERVAL '1 day')
+                    GROUP BY oi.product_id, oi.store_id
+                ),
+                inventory_snapshot AS (
+                    SELECT
+                        i.store_id,
+                        i.product_id,
+                        i.stock_level,
+                        s.store_name,
+                        p.product_name,
+                        c.category_name,
+                        COALESCE(rs.sold_units, 0) AS sold_units,
+                        COALESCE(rs.avg_daily_units, 0) AS avg_daily_units
+                    FROM retail.inventory i
+                    JOIN retail.stores s ON s.store_id = i.store_id
+                    JOIN retail.products p ON p.product_id = i.product_id
+                    JOIN retail.categories c ON c.category_id = p.category_id
+                    LEFT JOIN recent_sales rs ON rs.product_id = i.product_id AND rs.store_id = i.store_id
+                    WHERE ($2::int IS NULL OR i.store_id = $2)
+                )
+                SELECT
+                    store_id,
+                    store_name,
+                    product_id,
+                    product_name,
+                    category_name,
+                    stock_level,
+                    sold_units,
+                    avg_daily_units,
+                    CASE
+                        WHEN avg_daily_units > 0 THEN stock_level / NULLIF(avg_daily_units, 0)
+                        ELSE NULL
+                    END AS days_of_cover,
+                    CASE
+                        WHEN avg_daily_units > 0 AND stock_level <= ($3::int * avg_daily_units) THEN 'critical'
+                        WHEN avg_daily_units > 0 AND stock_level <= ($4::int * avg_daily_units) THEN 'warning'
+                        WHEN avg_daily_units > 0 AND stock_level > ($4::int * avg_daily_units) THEN 'healthy'
+                        ELSE 'unknown'
+                    END AS risk_status,
+                    CASE
+                        WHEN avg_daily_units > 0 THEN stock_level - ($4::int * avg_daily_units)
+                        ELSE stock_level
+                    END AS stock_gap_vs_safe_level
+                FROM inventory_snapshot
+                ORDER BY risk_status DESC, days_of_cover ASC, stock_level ASC
+                LIMIT 200
+            """
+
+            rows = await conn.fetch(
+                sql,
+                days_window,
+                store_id,
+                danger_days,
+                warning_days,
+            )
+
+            if not rows:
+                return json.dumps(
+                    {
+                        "results": [],
+                        "row_count": 0,
+                        "columns": [
+                            "store_id",
+                            "store_name",
+                            "product_id",
+                            "product_name",
+                            "category_name",
+                            "stock_level",
+                            "sold_units",
+                            "avg_daily_units",
+                            "days_of_cover",
+                            "risk_status",
+                            "stock_gap_vs_safe_level",
+                        ],
+                        "message": "No inventory rows found for the requested scope.",
+                    },
+                    indent=2,
+                    default=str,
+                )
+
+            results = [dict(row) for row in rows]
+            columns = list(rows[0].keys())
+            return json.dumps({"results": results, "row_count": len(results), "columns": columns}, indent=2, default=str)
+        except Exception as e:
+            return json.dumps(
+                {
+                    "error": f"Inventory optimization overview failed: {e!s}",
+                    "results": [],
+                    "row_count": 0,
+                    "columns": [],
+                },
+                indent=2,
+                default=str,
+            )
+        finally:
+            if conn:
+                await self.release_connection(conn)
+
+    async def recommend_inventory_transfers(
+        self,
+        rls_user_id: str,
+        store_id: Optional[int] = None,
+        days_window: int = 30,
+        critical_days: int = 7,
+        surplus_days: int = 21,
+    ) -> str:
+        """Recommend transfer opportunities from surplus stock to shortage risk locations."""
+        conn = None
+        try:
+            conn = await self.get_connection()
+            await conn.execute(
+                "SELECT set_config('app.current_rls_user_id', $1, false)",
+                rls_user_id,
+            )
+
+            sql = """
+                WITH recent_sales AS (
+                    SELECT
+                        oi.product_id,
+                        oi.store_id,
+                        SUM(oi.quantity)::numeric AS sold_units,
+                        (SUM(oi.quantity)::numeric / GREATEST($1::int, 1)) AS avg_daily_units
+                    FROM retail.order_items oi
+                    JOIN retail.orders o ON o.order_id = oi.order_id
+                    WHERE o.order_date >= CURRENT_DATE - ($1::int * INTERVAL '1 day')
+                    GROUP BY oi.product_id, oi.store_id
+                ),
+                inventory_health AS (
+                    SELECT
+                        i.store_id,
+                        i.product_id,
+                        i.stock_level,
+                        s.store_name,
+                        p.product_name,
+                        c.category_name,
+                        COALESCE(rs.avg_daily_units, 0) AS avg_daily_units,
+                        CASE
+                            WHEN COALESCE(rs.avg_daily_units, 0) > 0 THEN i.stock_level / NULLIF(rs.avg_daily_units, 0)
+                            ELSE NULL
+                        END AS days_of_cover,
+                        CASE
+                            WHEN COALESCE(rs.avg_daily_units, 0) > 0 THEN GREATEST(ROUND($2::int * rs.avg_daily_units, 0), 1)
+                            ELSE 0
+                        END AS safe_stock_level
+                    FROM retail.inventory i
+                    JOIN retail.stores s ON s.store_id = i.store_id
+                    JOIN retail.products p ON p.product_id = i.product_id
+                    JOIN retail.categories c ON c.category_id = p.category_id
+                    LEFT JOIN recent_sales rs ON rs.product_id = i.product_id AND rs.store_id = i.store_id
+                    WHERE ($3::int IS NULL OR i.store_id = $3)
+                )
+                SELECT
+                    surplus.store_name AS surplus_store,
+                    shortage.store_name AS shortage_store,
+                    shortage.product_id,
+                    shortage.product_name,
+                    shortage.category_name,
+                    surplus.stock_level AS surplus_stock_level,
+                    shortage.stock_level AS shortage_stock_level,
+                    shortage.avg_daily_units,
+                    shortage.days_of_cover AS shortage_days_of_cover,
+                    LEAST(
+                        GREATEST(surplus.stock_level - surplus.safe_stock_level, 0),
+                        GREATEST(shortage.safe_stock_level - shortage.stock_level, 0)
+                    ) AS recommended_transfer_units,
+                    CASE
+                        WHEN shortage.days_of_cover <= 3 THEN 'high'
+                        WHEN shortage.days_of_cover <= 7 THEN 'medium'
+                        ELSE 'low'
+                    END AS priority
+                FROM inventory_health AS surplus
+                JOIN inventory_health AS shortage
+                  ON surplus.product_id = shortage.product_id
+                WHERE surplus.store_id <> shortage.store_id
+                  AND surplus.stock_level > surplus.safe_stock_level
+                  AND shortage.avg_daily_units > 0
+                  AND shortage.stock_level < shortage.safe_stock_level
+                  AND (shortage.days_of_cover IS NULL OR shortage.days_of_cover <= $4::int)
+                  AND (surplus.days_of_cover IS NULL OR surplus.days_of_cover >= $5::int)
+                ORDER BY
+                    CASE
+                        WHEN shortage.days_of_cover <= 3 THEN 1
+                        WHEN shortage.days_of_cover <= 7 THEN 2
+                        ELSE 3
+                    END,
+                    recommended_transfer_units DESC
+                LIMIT 200
+            """
+
+            rows = await conn.fetch(
+                sql,
+                days_window,
+                critical_days,
+                store_id,
+                critical_days,
+                surplus_days,
+            )
+
+            if not rows:
+                return json.dumps(
+                    {
+                        "results": [],
+                        "row_count": 0,
+                        "columns": [
+                            "surplus_store",
+                            "shortage_store",
+                            "product_id",
+                            "product_name",
+                            "category_name",
+                            "surplus_stock_level",
+                            "shortage_stock_level",
+                            "avg_daily_units",
+                            "shortage_days_of_cover",
+                            "recommended_transfer_units",
+                            "priority",
+                        ],
+                        "message": "No transfer opportunities were found for the requested scope.",
+                    },
+                    indent=2,
+                    default=str,
+                )
+
+            results = [dict(row) for row in rows]
+            columns = list(rows[0].keys())
+            return json.dumps({"results": results, "row_count": len(results), "columns": columns}, indent=2, default=str)
+        except Exception as e:
+            return json.dumps(
+                {
+                    "error": f"Inventory transfer recommendation failed: {e!s}",
+                    "results": [],
+                    "row_count": 0,
+                    "columns": [],
+                },
+                indent=2,
+                default=str,
+            )
+        finally:
+            if conn:
+                await self.release_connection(conn)
+
 
 async def test_connection() -> bool:
     """Test PostgreSQL connection and return success status."""

@@ -182,6 +182,67 @@ async def get_current_utc_date() -> str:
         return f"Error retrieving current UTC date: {e!s}"
 
 
+@mcp.tool()
+async def get_inventory_optimization_overview(
+    ctx: Context,
+    store_id: Annotated[
+        Optional[int],
+        Field(description="Optional store ID to focus the analysis on a single store. Leave empty to review the full network."),
+    ] = None,
+    days_window: Annotated[
+        int,
+        Field(description="Recent sales window in days used to estimate demand. Typical values are 7, 14, 30, or 90.", ge=7, le=365),
+    ] = 30,
+) -> str:
+    """Return product-level inventory health across stores using recent demand, days-of-cover, and risk status.
+
+    This tool is designed for inventory optimization workflows such as identifying overstock,
+    understock, and products at risk of stockout. It honors the current RLS user context.
+    """
+    rls_user_id = get_rls_user_id(ctx)
+    provider = get_db_provider()
+    return await provider.get_inventory_optimization_overview(
+        rls_user_id=rls_user_id,
+        store_id=store_id,
+        days_window=days_window,
+    )
+
+
+@mcp.tool()
+async def recommend_inventory_transfers(
+    ctx: Context,
+    store_id: Annotated[
+        Optional[int],
+        Field(description="Optional store ID to focus on a single store. Leave empty to find opportunities across the network."),
+    ] = None,
+    days_window: Annotated[
+        int,
+        Field(description="Recent sales history window in days used to measure demand.", ge=7, le=365),
+    ] = 30,
+    critical_days: Annotated[
+        int,
+        Field(description="Threshold for a critical shortage in days of cover.", ge=1, le=30),
+    ] = 7,
+    surplus_days: Annotated[
+        int,
+        Field(description="Minimum days of cover required before a store can act as a surplus source.", ge=7, le=90),
+    ] = 21,
+) -> str:
+    """Recommend transfers from stores with excess stock to stores with shortage risk.
+
+    Returns product-level opportunities, priority, and suggested transfer quantities.
+    """
+    rls_user_id = get_rls_user_id(ctx)
+    provider = get_db_provider()
+    return await provider.recommend_inventory_transfers(
+        rls_user_id=rls_user_id,
+        store_id=store_id,
+        days_window=days_window,
+        critical_days=critical_days,
+        surplus_days=surplus_days,
+    )
+
+
 async def run_http_server() -> None:
     """Run the MCP server in HTTP mode."""
     print(f"📡 MCP endpoint available at: http://{mcp.settings.host}:{mcp.settings.port}/mcp")
