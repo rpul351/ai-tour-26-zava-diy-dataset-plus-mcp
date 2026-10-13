@@ -14,6 +14,22 @@ const sessionId = sessionStorage.getItem('sessionId') || (() => {
     return id;
 })();
 
+// Show the plan the agent stated before it called its tools.
+function addPlan(toolsDiv, plan) {
+    const box = document.createElement('div');
+    box.style.cssText = 'font-size:0.8em;color:#495057;margin:2px 0 4px;';
+    const goal = document.createElement('div');
+    goal.textContent = `\u{1F4CB} Plan: ${plan.goal || ''}`;
+    box.appendChild(goal);
+    (plan.steps || []).forEach((step, i) => {
+        const line = document.createElement('div');
+        line.textContent = `   ${i + 1}. ${step.tool} \u2014 ${step.purpose}`;
+        box.appendChild(line);
+    });
+    toolsDiv.appendChild(box);
+    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+}
+
 // Show one tool call the agent made, above its answer.
 function addToolCall(toolsDiv, tool) {
     const line = document.createElement('div');
@@ -232,7 +248,13 @@ async function sendMessage() {
             
             try {
                 const parsed = JSON.parse(event.data);
-                if (parsed.tool) {
+                if (parsed.plan) {
+                    if (!toolsDiv) {
+                        toolsDiv = document.createElement('div');
+                        messagesDiv.insertBefore(toolsDiv, assistantDiv);
+                    }
+                    addPlan(toolsDiv, parsed.plan);
+                } else if (parsed.tool) {
                     if (!toolsDiv) {
                         toolsDiv = document.createElement('div');
                         messagesDiv.insertBefore(toolsDiv, assistantDiv);

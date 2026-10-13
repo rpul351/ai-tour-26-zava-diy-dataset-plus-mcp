@@ -25,7 +25,7 @@ import agent_service as svc  # noqa: E402
 IDENTITIES = {"global": GLOBAL, "kirkland": KIRKLAND}
 CONCURRENCY = 3
 CASE_TIMEOUT_SECONDS = 300
-DECLINE = re.compile(r"(?i)\b(cannot|can't|can not|unable|not able|won't|do not|don't|no data|not visible|only see|outside|not available|can only|only help|only handle|aren't available|isn't available)\b")
+DECLINE = re.compile(r"(?i)\b(cannot|can't|can not|unable|not able|won't|will not|do not|don't|no data|not visible|only see|outside|not available|can only|only help|only handle|aren't available|isn't available)\b")
 
 
 @dataclass
