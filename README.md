@@ -36,8 +36,9 @@ Every answer is checked in code before it is sent. Figures must match a tool res
    - `GPT_MODEL_DEPLOYMENT_NAME`: the chat model deployment (the agent was tested with `gpt-5-mini`)
    - `EMBEDDING_MODEL_DEPLOYMENT_NAME`: the embedding deployment (used by semantic product search)
    - `RLS_USER_ID`: whose data the agent may see. The all-zeros ID sees all 8 stores. A store ID sees only that store. There is no default, and the agent refuses to start tools without one
+   - `MODEL_REASONING_EFFORT` (optional): `minimal`, `low` (default), `medium` or `high`. Lower is faster; higher may be more accurate
 3. Make sure the database is running and the `store_manager` role can log in. The servers connect as that role, which has read-only access and does not bypass Row Level Security.
-4. Run the VS Code tasks **Run Agent Service**, then **Run Web App**, and open http://127.0.0.1:8005.
+4. Run the VS Code tasks **Run Agent Service**, then **Run Web App**, and open http://127.0.0.1:8005. Add `?debug=1` to the address to see each tool call the agent makes (useful for demos).
 5. Check http://127.0.0.1:8006/health. It lists each MCP server, the tool count and the prompt version.
 
 ### Test it

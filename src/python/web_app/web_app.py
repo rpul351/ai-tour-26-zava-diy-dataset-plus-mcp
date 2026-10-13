@@ -163,8 +163,6 @@ class WebApp:
                                         # Convert agent service response format to web format
                                         if data.get("tool"):
                                             yield f"data: {json.dumps({'tool': data['tool']})}\n\n"
-                                        elif data.get("plan"):
-                                            yield f"data: {json.dumps({'plan': data['plan']})}\n\n"
                                         elif data.get("content"):
                                             assistant_message += data["content"]
                                             yield f"data: {json.dumps({'content': data['content']})}\n\n"

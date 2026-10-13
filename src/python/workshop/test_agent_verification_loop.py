@@ -20,7 +20,7 @@ class ScriptedModel:
         self.sent = []
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
 
-    async def create(self, model, messages, tools):
+    async def create(self, model, messages, tools, **kwargs):
         self.sent.append([dict(m) for m in messages])
         message = SimpleNamespace(content=self.replies.pop(0), tool_calls=None)
         return SimpleNamespace(choices=[SimpleNamespace(message=message)])
@@ -81,7 +81,7 @@ def test_content_filter_block_returns_a_clear_message_and_is_not_stored():
     agent_service.evidence_store["filter"] = []
     model = ScriptedModel([])
 
-    async def refuse(model, messages, tools):
+    async def refuse(model, messages, tools, **kwargs):
         raise blocked
 
     model.chat.completions.create = refuse
@@ -99,7 +99,7 @@ def test_a_slow_tool_times_out_and_the_model_is_told():
     call = SimpleNamespace(type="function", id="c1", function=SimpleNamespace(name="slow", arguments="{}"))
 
     class ToolThenAnswer(ScriptedModel):
-        async def create(self, model, messages, tools):
+        async def create(self, model, messages, tools, **kwargs):
             self.sent.append([dict(m) for m in messages])
             reply = self.replies.pop(0)
             message = SimpleNamespace(content=reply, tool_calls=None if reply else [call])
@@ -122,46 +122,6 @@ def test_a_slow_tool_times_out_and_the_model_is_told():
         agent_service.TOOL_TIMEOUT_SECONDS = original
     assert "did not answer within" in model.sent[1][-1]["content"]
     assert items[-1] == {"done": True}
-
-
-def test_the_plan_is_shown_recorded_and_never_sent_to_a_data_tool():
-    plan_args = '{"goal": "Find excess stock", "steps": [{"tool": "rank_capital_tied_up", "purpose": "rank products"}]}'
-    plan_call = SimpleNamespace(type="function", id="p1", function=SimpleNamespace(name="submit_plan", arguments=plan_args))
-    data_call = SimpleNamespace(type="function", id="d1", function=SimpleNamespace(name="data", arguments="{}"))
-    seen = []
-
-    class PlanThenAnswer(ScriptedModel):
-        async def create(self, model, messages, tools):
-            self.sent.append([dict(m) for m in messages])
-            reply = self.replies.pop(0)
-            calls = [plan_call, data_call] if reply is None else None
-            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=reply, tool_calls=calls))])
-
-    async def data_tool(name, arguments):
-        seen.append(name)
-        return SimpleNamespace(content=[SimpleNamespace(text='{"units": 5}')], isError=False)
-
-    model = PlanThenAnswer([None, "Done."])
-    app = SimpleNamespace(state=SimpleNamespace(openai=model, tools=TOOLS, tool_owners={"data": SimpleNamespace(call_tool=data_tool)}))
-    agent_service.evidence_store["plan"] = []
-
-    async def run():
-        return [item async for item in agent_service.run_turn(app, "plan", "question")]
-
-    items = asyncio.run(run())
-    assert [i["plan"]["goal"] for i in items if "plan" in i] == ["Find excess stock"]
-    assert seen == ["data"], "the plan must not be sent to a data tool"
-    sent_tools = [m["content"] for m in model.sent[1] if m.get("role") == "tool"]
-    assert sent_tools[0].startswith("Plan recorded")
-
-
-def test_a_bad_or_oversized_plan_is_cleaned():
-    assert agent_service.clean_plan("not json") == {"goal": "", "steps": []}
-    many = '{"goal": "g", "steps": [' + ",".join(['{"tool": "t", "purpose": "p"}'] * 20) + ", 5]}"
-    cleaned = agent_service.clean_plan(many)
-    assert len(cleaned["steps"]) == agent_service.MAX_PLAN_STEPS
-    long_goal = agent_service.clean_plan('{"goal": "' + "x" * 1000 + '", "steps": []}')["goal"]
-    assert len(long_goal) == agent_service.MAX_PLAN_TEXT_CHARS
 
 
 def test_a_session_that_asks_too_often_is_told_to_wait():
