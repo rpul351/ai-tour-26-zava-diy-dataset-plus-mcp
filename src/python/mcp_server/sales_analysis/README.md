@@ -59,6 +59,55 @@ Get the current UTC date and time in ISO format.
 
 **Returns:** Current UTC date/time in ISO format (YYYY-MM-DDTHH:MM:SS.fffffZ)
 
+### `rank_capital_tied_up`
+
+Rank products by the cost value of stock held beyond a target number of months of cover.
+
+**Parameters:**
+
+- `store_id` (int, optional): Rank a single store. Leave empty for every store the current user can see
+- `window_days` (int, default 365): Sales history, ending today, used to measure demand. Future-dated orders are excluded
+- `target_months_cover` (int, default 6): Months of sales a product should hold. Stock above this counts as excess
+- `top_n` (int, default 20, max 50): Number of products to return
+
+**Returns:** JSON with, per product, stock units and value, units sold in the window, months of cover, excess units and value, share of total excess, the total excess in scope, and the total stock units and value in scope (`total_stock_units_in_scope`, `total_stock_value_in_scope`). Each product also has `peak_month`, `months_until_peak`, `peak_is_near` and a `clearance_guard` that says whether clearing is blocked by the category's seasonal peak. A `scope` field names the stores covered. An empty result includes a message.
+
+### `compare_store_coverage`
+
+Compare each store's stock with its share of demand, per category.
+
+**Parameters:**
+
+- `category_name` (str, optional): For example `HARDWARE`. Leave empty for every category
+- `window_days` (int, default 365): Sales history, ending today, used to measure demand
+
+**Returns:** JSON with, per store and category, stock units and value, units sold, months of cover, share of stock, share of sales, and `units_over_equal_cover` (stock above what equal cover across stores would give; negative is below). The result is a relative imbalance, not a shortage. A `scope` field names the stores covered, and a note appears when only one store is visible.
+
+### `seasonal_baseline_check`
+
+Give a category's seasonal pattern and how recent months compare with it.
+
+**Parameters:**
+
+- `category_name` (str): For example `GARDEN & OUTDOOR`. An unknown name returns the valid list
+- `store_id` (int, optional): Leave empty for every store the current user can see
+- `recent_months` (int, default 6): Number of recent complete months to compare
+
+**Returns:** JSON with the seasonal index by month (1.0 is an average month), the peak month, months until the peak, `peak_is_near` (true when the peak is within 3 months), and recent actual versus expected units. The current month and future-dated orders are excluded. Nothing is reported with fewer than 2 complete calendar years. Lead times are not in the data.
+
+### `year_over_year_summary`
+
+Compare one calendar year with another.
+
+**Parameters:**
+
+- `year` (int): Calendar year to examine, for example `2023`
+- `compare_year` (int, optional): Year to compare with. Defaults to the year before `year`
+
+**Returns:** JSON with units, revenue, orders and customers for both years, with absolute and percentage change, in total and by store, by category and by calendar month, plus `biggest_movers` (by amount and by percentage). Months are paired by calendar month. If either year is the current one, both years cover the same dates. Orders dated after today are excluded. A year with no orders returns a message with the first and last order dates. The data holds no reasons for a change.
+
+Every tool result that has a `scope` field also reports `covers_all_stores`, which is true only when the current user can see every store.
+
 ## Security Features
 
 ### Row Level Security (RLS)

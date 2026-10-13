@@ -15,6 +15,11 @@ from customer_sales_postgres import PostgreSQLCustomerSales
 from mcp.server.fastmcp import Context, FastMCP
 from pydantic import Field
 
+import sys
+from functools import partial
+
+print = partial(print, file=sys.stderr)  # stdout carries the MCP protocol in stdio mode
+
 RLS_USER_ID = None
 
 

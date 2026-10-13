@@ -18,6 +18,48 @@ The dataset simulates **Zava DIY**, a Washington State-based home improvement re
 
 Fork this repository to get started with the Zava DIY dataset and MCP servers. The project is designed to be used in a development container for easy setup and includes scripts for deploying Azure resources if you want to integrate with Azure AI services. Then make it your own by customizing the dataset, MCP servers, or building new applications on top of the provided infrastructure..
 
+## Zava Inventory Advisor (agent)
+
+An agent that helps inventory and store managers decide what to do about stock. It answers only through the three MCP servers, never from its own database connection. It covers three problems: excess stock and capital tied up, store stock that does not follow demand, and seasonal demand. The design is in [docs/architecture.md](docs/architecture.md) and the test results are in [docs/evaluation.md](docs/evaluation.md).
+
+```text
+Browser -> web app (:8005) -> agent service (:8006) -> 3 MCP servers (stdio) -> PostgreSQL (Row Level Security)
+```
+
+Every answer is checked in code before it is sent. Figures must match a tool result, calculations are recomputed, and a network total can only be claimed when the user can see every store.
+
+### Run it
+
+1. Sign in to Azure (`az login`). The agent calls Azure OpenAI with your Azure sign-in, not a key.
+2. Copy `.env.example` to `.env` and set:
+   - `AZURE_OPENAI_ENDPOINT`: your Azure OpenAI endpoint
+   - `GPT_MODEL_DEPLOYMENT_NAME`: the chat model deployment (the agent was tested with `gpt-5-mini`)
+   - `EMBEDDING_MODEL_DEPLOYMENT_NAME`: the embedding deployment (used by semantic product search)
+   - `RLS_USER_ID`: whose data the agent may see. The all-zeros ID sees all 8 stores. A store ID sees only that store. There is no default, and the agent refuses to start tools without one
+3. Make sure the database is running and the `store_manager` role can log in. The servers connect as that role, which has read-only access and does not bypass Row Level Security.
+4. Run the VS Code tasks **Run Agent Service**, then **Run Web App**, and open http://127.0.0.1:8005.
+5. Check http://127.0.0.1:8006/health. It lists each MCP server, the tool count and the prompt version.
+
+### Test it
+
+```bash
+(cd src/python/workshop && python test_answer_verifier.py && python test_agent_verification_loop.py)
+python -m unittest tests.test_inventory_advisor            # tool tests against the live database
+RUN_AGENT_TESTS=1 python -m unittest tests.test_inventory_advisor   # also runs the agent (calls the model)
+python -m tests.evaluation                                  # 20 questions, writes docs/evaluation.md (about 7 minutes)
+```
+
+### Logs
+
+Every question, tool call, timing, token count and prompt version is appended to `logs/agent_calls.jsonl` (ignored by git). The log holds the questions users ask, so treat it as private.
+
+### Known limits
+
+- Stock levels in the dataset are synthetic and are not tied to sales, so the size of the excess reflects how the data was generated.
+- One running agent service has one identity. Per-user sign-in is not built.
+- Conversations are held in memory and are lost when the service restarts.
+- There is no request limit and no cost figure. Tokens are logged but not priced.
+
 ## Contributions
 
 Contributions are welcome! If you have ideas for improvements, new features, or bug fixes, please open an issue or submit a pull request.

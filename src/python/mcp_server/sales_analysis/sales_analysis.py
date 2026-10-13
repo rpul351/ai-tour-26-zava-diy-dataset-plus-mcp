@@ -15,6 +15,11 @@ from mcp.server.fastmcp import Context, FastMCP
 from pydantic import Field
 from sales_analysis_postgres import PostgreSQLSchemaProvider
 
+import sys
+from functools import partial
+
+print = partial(print, file=sys.stderr)  # stdout carries the MCP protocol in stdio mode
+
 RLS_USER_ID = None
 
 
@@ -240,6 +245,135 @@ async def recommend_inventory_transfers(
         days_window=days_window,
         critical_days=critical_days,
         surplus_days=surplus_days,
+    )
+
+
+@mcp.tool()
+async def rank_capital_tied_up(
+    ctx: Context,
+    store_id: Annotated[
+        Optional[int],
+        Field(description="Optional store ID to rank a single store. Leave empty for every store the current user can see."),
+    ] = None,
+    window_days: Annotated[
+        int,
+        Field(description="Sales history in days, ending today, used to measure demand. Future-dated orders are excluded.", ge=30, le=1095),
+    ] = 365,
+    target_months_cover: Annotated[
+        int,
+        Field(description="Months of sales a product should hold. Stock above this counts as excess.", ge=1, le=36),
+    ] = 6,
+    top_n: Annotated[
+        int,
+        Field(description="Number of products to return, ranked by excess value.", ge=1, le=50),
+    ] = 20,
+) -> str:
+    """Rank products by the cost value of stock held beyond a target months of cover, to find where capital is tied up.
+
+    Returns, per product: stock units and value, units sold in the window, months of cover,
+    excess units and value, and each product's share of the total excess in scope.
+    Use this before recommending that purchasing is held. It does not say whether the excess is
+    seasonal, so check the product's seasonal pattern before recommending that stock is cleared.
+    It honors the current RLS user context.
+    """
+    rls_user_id = get_rls_user_id(ctx)
+    provider = get_db_provider()
+    return await provider.rank_capital_tied_up(
+        rls_user_id=rls_user_id,
+        store_id=store_id,
+        window_days=window_days,
+        target_months_cover=target_months_cover,
+        top_n=top_n,
+    )
+
+
+@mcp.tool()
+async def compare_store_coverage(
+    ctx: Context,
+    category_name: Annotated[
+        Optional[str],
+        Field(description="Optional category name, for example 'HARDWARE'. Leave empty for every category."),
+    ] = None,
+    window_days: Annotated[
+        int,
+        Field(description="Sales history in days, ending today, used to measure demand. Future-dated orders are excluded.", ge=30, le=1095),
+    ] = 365,
+) -> str:
+    """Compare each store's stock with its share of demand, per category, to see whether stock follows demand.
+
+    Returns, per store and category: stock units and value, units sold, months of cover, share of stock,
+    share of sales, and the units held above what equal cover across stores would give.
+    The result includes a scope field naming the stores covered. Only call a result a network total
+    if every store is listed. A positive imbalance is a relative surplus, not a shortage.
+    It honors the current RLS user context.
+    """
+    rls_user_id = get_rls_user_id(ctx)
+    provider = get_db_provider()
+    return await provider.compare_store_coverage(
+        rls_user_id=rls_user_id,
+        category_name=category_name,
+        window_days=window_days,
+    )
+
+
+@mcp.tool()
+async def seasonal_baseline_check(
+    ctx: Context,
+    category_name: Annotated[
+        str,
+        Field(description="Category name, for example 'GARDEN & OUTDOOR'. An unknown name returns the valid list."),
+    ],
+    store_id: Annotated[
+        Optional[int],
+        Field(description="Optional store ID. Leave empty for every store the current user can see."),
+    ] = None,
+    recent_months: Annotated[
+        int,
+        Field(description="Number of most recent complete months to compare with the seasonal pattern.", ge=1, le=24),
+    ] = 6,
+) -> str:
+    """Give a category's seasonal pattern, its peak month, how many months until the peak, and how recent months compare.
+
+    Use this before recommending that stock is cleared or bought. Months of the current period and
+    future-dated orders are excluded. It reports nothing if the scope has fewer than 2 complete calendar years.
+    Lead times are not in the data. It honors the current RLS user context.
+    """
+    rls_user_id = get_rls_user_id(ctx)
+    provider = get_db_provider()
+    return await provider.seasonal_baseline_check(
+        rls_user_id=rls_user_id,
+        category_name=category_name,
+        store_id=store_id,
+        recent_months=recent_months,
+    )
+
+
+@mcp.tool()
+async def year_over_year_summary(
+    ctx: Context,
+    year: Annotated[
+        int,
+        Field(description="Calendar year to examine, for example 2023.", ge=1900, le=2100),
+    ],
+    compare_year: Annotated[
+        Optional[int],
+        Field(description="Year to compare with. Defaults to the year before `year`.", ge=1900, le=2100),
+    ] = None,
+) -> str:
+    """Compare one calendar year with another: totals, by store, by category and by calendar month.
+
+    Use this for questions such as "what happened in 2023" or "how did 2024 compare with 2023".
+    Returns units, revenue, orders and customers for both years, with absolute and percentage change.
+    Months are paired by calendar month. If either year is the current one, both years cover the same
+    part of the year. Orders dated after today are excluded. The data holds no reasons for a change.
+    The result includes a scope field naming the stores covered. It honors the current RLS user context.
+    """
+    rls_user_id = get_rls_user_id(ctx)
+    provider = get_db_provider()
+    return await provider.year_over_year_summary(
+        rls_user_id=rls_user_id,
+        year=year,
+        compare_year=compare_year,
     )
 
 
