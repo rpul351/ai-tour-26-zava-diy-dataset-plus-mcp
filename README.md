@@ -47,7 +47,7 @@ Every answer is checked in code before it is sent. Figures must match a tool res
 (cd src/python/workshop && python test_answer_verifier.py && python test_agent_verification_loop.py)
 python -m unittest tests.test_inventory_advisor            # tool tests against the live database
 RUN_AGENT_TESTS=1 python -m unittest tests.test_inventory_advisor   # also runs the agent (calls the model)
-python -m tests.evaluation                                  # 20 questions, writes docs/evaluation.md (about 7 minutes)
+python -m tests.evaluation                                  # 23 questions, writes docs/evaluation.md (about 7 minutes)
 ```
 
 ### Logs

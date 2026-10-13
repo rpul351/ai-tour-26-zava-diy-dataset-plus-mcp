@@ -34,11 +34,11 @@ A weakness to know about. For "When should I order Garden and Outdoor stock so i
 
 ## Numbers to quote
 
-From the 2026-10-13 evaluation (`docs/evaluation.md`), one run:
+From the latest evaluation (`docs/evaluation.md`), one run on 2026-10-13:
 
-- Accuracy: 20 of 20 on our own 20 questions. Earlier runs scored 16 to 19 (history in `docs/architecture.md`). The rules were adjusted while the work was in progress.
-- Latency: median 12.1 s, slowest 35.2 s.
-- Cost: about $0.0045 per question at list price (median 11,000 tokens).
+- Accuracy: 23 of 23 on our own 23 questions. Earlier runs scored 16 to 19 (history in `docs/architecture.md`). The rules were adjusted while the work was in progress.
+- Latency: median 10.4 s, slowest 29.2 s.
+- Cost: about $0.0042 per question at list price (median 11,293 tokens).
 - About 1 in 7 answers needed a rewrite after the automatic check (12 of 85 logged answers).
 - Nothing in the data changed during testing: the orders table stayed at 198,946 rows.
 

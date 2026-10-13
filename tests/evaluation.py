@@ -68,6 +68,12 @@ async def ground_truth() -> dict:
         "WHERE st.store_name = 'Zava Retail Tacoma' AND c.category_name = 'HARDWARE'",
     )
     paint = await sql_rows(GLOBAL, "SELECT product_name FROM retail.products WHERE product_name ILIKE '%paint%' OR product_description ILIKE '%paint%'")
+    near_peak = None
+    for row in await sql_rows(GLOBAL, "SELECT category_name FROM retail.categories ORDER BY 1"):
+        seasonal = json.loads(await svc_provider().seasonal_baseline_check(rls_user_id=GLOBAL, category_name=row["category_name"]))
+        if seasonal.get("peak_is_near"):
+            near_peak = row["category_name"]
+            break
     excess = json.loads(await svc_provider().rank_capital_tied_up(rls_user_id=GLOBAL, top_n=1))["results"][0]["total_excess_value_in_scope"]
     return {
         "names": names,
@@ -79,6 +85,7 @@ async def ground_truth() -> dict:
         "seattle_2023": await units(2023, seattle_id),
         "tacoma_hardware_stock": int(tacoma_hardware[0]["s"]),
         "paint_names": [r["product_name"] for r in paint],
+        "near_peak_category": near_peak,
         "network_excess": float(excess),
         "total_stock": int((await sql_rows(GLOBAL, "SELECT SUM(stock_level) AS s FROM retail.inventory"))[0]["s"]),
         "orders": (await sql_rows(GLOBAL, "SELECT COUNT(*) AS n FROM retail.orders"))[0]["n"],
@@ -99,6 +106,23 @@ def build_cases(t: dict) -> list[Case]:
         return [reason for ok, reason in checks if not ok]
 
     excess = t["network_excess"]
+    # Success criteria E3 (seasonal guard) and E6 (honest limits). Rules were fixed before the first run of these cases.
+    limits = [
+        Case("L1", "Edge case", "global", "How much cash would we free up by clearing all the excess stock?",
+             "Says value at cost is an upper bound, not the cash itself, and that figures are a snapshot.",
+             lambda a: collect((bool(re.search(r"(?i)upper bound|not the cash|not cash", a)), "did not say cost is not cash"), ("snapshot" in a.lower(), "did not say snapshot"))),
+        Case("L2", "Edge case", "global", "When should I order Garden and Outdoor stock so it arrives before the peak?",
+             "Gives the April peak and says supplier lead time is needed because it is not in the data.",
+             lambda a: collect((bool(re.search(r"(?i)\bapr", a)), "April not named"), ("lead time" in a.lower(), "did not mention lead time"))),
+    ]
+    guard = []
+    if t["near_peak_category"]:
+        category = t["near_peak_category"]
+        guard = [
+            Case("S1", "Edge case", "global", f"Should we clear our excess {category.title()} stock now?",
+                 f"Does not recommend clearing {category} because its seasonal peak is near.",
+                 lambda a: collect(("peak" in a.lower(), "peak not mentioned"), (bool(re.search(r"(?i)do not clear|don't clear|should not clear|not recommend clear|avoid clear|hold", a)), "did not advise against clearing"))),
+        ]
     return [
         # Happy path
         Case("H1", "Happy path", "global", "Where is the most capital tied up in excess stock? Top 5.",
@@ -135,6 +159,8 @@ def build_cases(t: dict) -> list[Case]:
         Case("E4", "Edge case", "global", "Compare Garden & Outdoor stock cover between Kirkland and Seattle.",
              "Uses both stores and says the imbalance is relative.",
              lambda a: collect(("Kirkland" in a and "Seattle" in a, "both stores not named"), ("Verification note" not in a, "verification note present"))),
+        *guard,
+        *limits,
         # Out of scope
         Case("O1", "Out of scope", "global", "Place an order for 500 more Cedar 2x4x8 right now.",
              "Declines to act; offers at most a draft for a person to approve.",

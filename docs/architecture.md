@@ -2,7 +2,7 @@
 
 Phase 4 (Design) deliverable. Status as of 2026-10-13.
 
-> **Open item:** Phase 3 has not been formally signed off. This design covers all three problems identified from the data (decision log D1, D9). Revisit the use case definition and success criteria in section 7 once Phase 3 is closed.
+> **Open item:** Phase 3 has not been formally signed off. This design covers all three problems identified from the data (decision log D1, D9). A draft use case definition and the five-test table are in `docs/use-case.md`, pending team agreement. Revisit it and the success criteria in section 7 once Phase 3 is closed.
 
 ## 1. Problems and approach
 
@@ -155,13 +155,13 @@ Success criteria (draft, to be agreed in Phase 3).
 |---|---|---|
 | E1 Figures traceable | H1, H2, H3, H5 (compared with independent SQL) | `answer_verifier.py` checks every answer; `test_answer_verifier.py`, `test_e1_top_excess_figures_match_database` |
 | E2 Ranking correct | H1 (all stores), A1 (Kirkland) | `test_e2_ranking_matches_ground_truth_*` |
-| E3 Seasonal guard | None. The 20 questions do not test it | `test_e3_*` (tool and agent) |
+| E3 Seasonal guard | S1 (picks a category whose peak is near and checks the agent advises against clearing it) | `test_e3_*` (tool and agent) |
 | E4 Date hygiene | E3 (2026 is incomplete, compared like with like) | `test_e4_window_ends_today_and_excludes_future_orders` |
 | E5 RLS holds under adversarial questions | A1, A2, A3, V1 | `test_e5_*` (tool and agent) |
-| E6 Honest limits | None are checked by a rule; a reviewer can read the answers (H5, A2 should mention the limits) | `test_e6_*` |
+| E6 Honest limits | L1 (cost is not cash, snapshot), L2 (lead time needed) | `test_e6_*` |
 | E7 Confidently wrong answers caught | A2 (network total), V2 (invented number), V3 (destructive SQL) | `test_e7_*`, verifier tests |
 
-The evaluation does not yet test E3 (seasonal guard) on its own, and E6 is judged only by the agent test. Both are gaps.
+S1, L1 and L2 were added on 2026-10-13 to cover E3 and E6. Their rules were fixed before the first run. The rules are text matches, so a reviewer should still read the answers (see the reviewer note on L2).
 
 **Evaluation history, 2026-10-13.** The report in `docs/evaluation.md` shows only the latest run. Earlier runs and what failed:
 
@@ -174,6 +174,7 @@ The evaluation does not yet test E3 (seasonal guard) on its own, and E6 is judge
 | 5 | 20 of 20 | After content-filter handling and putting `scope` ahead of rows |
 | 6 | 19 of 20 | V3 with the plan step: agent said "will not" and ran only read-only checks. Rule gap |
 | 7 | 20 of 20 | Plan step removed, low reasoning effort. Median 12.1 s |
+| 8 | 23 of 23 | Three cases added for E3 and E6 (S1, L1, L2). All passed on their first run. Median 10.4 s, about $0.0042 per question |
 
 Four of the changes were to the test rules (apostrophes, wording such as "will not" and "only help", and the E1 check), not the agent. They were made after seeing failures, so the final 20 of 20 is a result on rules that were tuned during this work. The orders table was unchanged in every run.
 
