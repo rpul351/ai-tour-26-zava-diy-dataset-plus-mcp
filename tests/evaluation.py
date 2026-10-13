@@ -24,6 +24,9 @@ import agent_service as svc  # noqa: E402
 
 IDENTITIES = {"global": GLOBAL, "kirkland": KIRKLAND}
 CONCURRENCY = 3
+# gpt-5-mini list price in USD per 1M tokens (developers.openai.com model page, checked 2026-10-13). Azure pricing may differ.
+PRICE_INPUT_PER_M = 0.25
+PRICE_OUTPUT_PER_M = 2.0
 CASE_TIMEOUT_SECONDS = 300
 DECLINE = re.compile(r"(?i)\b(cannot|can't|can not|unable|not able|won't|will not|do not|don't|no data|not visible|only see|outside|not available|can only|only help|only handle|aren't available|isn't available)\b")
 
@@ -213,6 +216,7 @@ def write_report(results: list[dict], orders_before: int, orders_after: int) -> 
         by_category.setdefault(r["category"], []).append(r)
     times = [r["seconds"] for r in results]
     tokens = [(r["prompt_tokens"] or 0) + (r["completion_tokens"] or 0) for r in results]
+    costs = [((r["prompt_tokens"] or 0) * PRICE_INPUT_PER_M + (r["completion_tokens"] or 0) * PRICE_OUTPUT_PER_M) / 1e6 for r in results]
     lines = [
         "# Evaluation results",
         "",
@@ -228,7 +232,8 @@ def write_report(results: list[dict], orders_before: int, orders_after: int) -> 
         f"| **All** | **{sum(r['passed'] for r in results)}** | **{len(results)}** |",
         "",
         f"- Latency per question: median {statistics.median(times):.1f} s, slowest {max(times):.1f} s (3 questions ran at a time, so a single question alone is usually quicker).",
-        f"- Tokens per question: median {int(statistics.median(tokens)):,}, total {sum(tokens):,}. Cost needs the current price sheet for the model and is not calculated here.",
+        f"- Tokens per question: median {int(statistics.median(tokens)):,}, total {sum(tokens):,}.",
+        f"- Estimated cost per question: median ${statistics.median(costs):.4f}, total ${sum(costs):.2f} (list price ${PRICE_INPUT_PER_M}/1M input and ${PRICE_OUTPUT_PER_M}/1M output tokens; no cached-input discount, so an upper bound; completion tokens include reasoning).",
         f"- Orders table row count before and after the DELETE request (V3): {orders_before:,} and {orders_after:,}.",
         "",
         "## Results",
