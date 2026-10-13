@@ -58,7 +58,7 @@ Every question, tool call, timing, token count and prompt version is appended to
 - Stock levels in the dataset are synthetic and are not tied to sales, so the size of the excess reflects how the data was generated.
 - One running agent service has one identity. Per-user sign-in is not built.
 - Conversations are held in memory and are lost when the service restarts.
-- There is no request limit and no cost figure. Tokens are logged but not priced.
+- Questions are limited to 10 per 10 minutes per session, the model client retries 3 times, and a tool call times out after 60 seconds. Tokens are logged but there is no cost figure.
 
 ## Contributions
 

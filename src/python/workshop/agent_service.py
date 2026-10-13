@@ -10,12 +10,14 @@ identity they run under; the model cannot change it.
 To run: python agent_service.py
 """
 
+import asyncio
 import hashlib
 import json
 import logging
 import os
 import sys
 import time
+from collections import deque
 from collections.abc import AsyncGenerator
 from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import datetime, timezone
@@ -59,6 +61,11 @@ MAX_STORED_MESSAGES = 20
 STREAM_CHUNK_CHARS = 40
 LOG_DIR = Path(os.getenv("AGENT_LOG_DIR") or Path(__file__).resolve().parents[3] / "logs")
 MAX_LOGGED_RESULT_CHARS = 2000
+TOOL_TIMEOUT_SECONDS = 60
+MODEL_TIMEOUT_SECONDS = 120
+MODEL_MAX_RETRIES = 3
+RATE_LIMIT_QUESTIONS = 10
+RATE_LIMIT_WINDOW_SECONDS = 600
 CONTENT_FILTER_MESSAGE = (
     "This request was blocked by the Azure OpenAI content policy, for example because it looks like an attempt "
     "to override the assistant's instructions. Please rephrase it as a question about Zava inventory, stock or sales."
@@ -121,6 +128,20 @@ class ChatRequest(BaseModel):
 sessions: dict[str, list[dict[str, str]]] = {}
 # Tool results are kept separately so later turns can still be checked against them.
 evidence_store: dict[str, list[str]] = {}
+# Start times of recent questions per session, used to stop one session flooding the model.
+recent_questions: dict[str, deque[float]] = {}
+
+
+def rate_limit_wait(session_id: str) -> int:
+    """Seconds the session must wait before asking again, or 0 if it may ask now."""
+    now = time.monotonic()
+    times = recent_questions.setdefault(session_id, deque())
+    while times and now - times[0] > RATE_LIMIT_WINDOW_SECONDS:
+        times.popleft()
+    if len(times) >= RATE_LIMIT_QUESTIONS:
+        return int(RATE_LIMIT_WINDOW_SECONDS - (now - times[0])) + 1
+    times.append(now)
+    return 0
 
 
 @asynccontextmanager
@@ -137,6 +158,8 @@ async def lifespan(app: FastAPI):
             azure_endpoint=AZURE_OPENAI_ENDPOINT,
             azure_ad_token_provider=token_provider,
             api_version=API_VERSION,
+            timeout=MODEL_TIMEOUT_SECONDS,
+            max_retries=MODEL_MAX_RETRIES,
         )
 
     async with AsyncExitStack() as stack:
@@ -309,9 +332,13 @@ async def run_turn(app: FastAPI, session_id: str, message: str) -> AsyncGenerato
             else:
                 try:
                     arguments = json.loads(call.function.arguments or "{}")
-                    text = tool_result_text(await owner.call_tool(call.function.name, arguments))
+                    text = tool_result_text(
+                        await asyncio.wait_for(owner.call_tool(call.function.name, arguments), TOOL_TIMEOUT_SECONDS)
+                    )
                 except json.JSONDecodeError:
                     text = "Tool error: arguments were not valid JSON."
+                except asyncio.TimeoutError:
+                    text = f"Tool error: {call.function.name} did not answer within {TOOL_TIMEOUT_SECONDS} seconds."
             elapsed_ms = round((time.perf_counter() - started) * 1000)
             tool_count += 1
             record(
@@ -350,6 +377,10 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
             yield sse({"error": "Agent service is not configured: " + "; ".join(problems)})
             return
         try:
+            wait = rate_limit_wait(request.session_id)
+            if wait:
+                yield sse({"error": f"Too many questions from this session. Please wait {wait} seconds and try again."})
+                return
             async for item in run_turn(app, request.session_id, request.message):
                 yield sse(item)
         except Exception as exc:  # noqa: BLE001 - report to the client instead of dropping the stream

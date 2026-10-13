@@ -178,7 +178,10 @@ RLS stops rows leaking, but a tool result can still leak by what it says about t
 | Stock and sales not comparable | Known data caveat | Agent labels excess as "within this dataset" |
 | Model writes wrong SQL | Tool error JSON | One retry after re-reading the schema, then reports the failure |
 | Answer contains a figure no tool returned, a wrong calculation, a missing Scope line, or a wrong network-total claim | `answer_verifier.py` checks every draft answer before it is sent | The agent is told the problem and rewrites, up to 2 times. If it is still wrong, the answer is sent with a visible "Verification note" |
-| Over-long results | Result size cap | Agent works from the capped set and states that results are limited |
+| Over-long results | Result size cap | Agent works from the capped set and states that results are limited. `scope` and `notes` come before the rows in tool output, so a cut-off result still names its stores |
+| Request blocked by the model's content filter | Model call returns a `content_filter` error | The user sees a plain message asking them to rephrase as an inventory question, and the turn is logged |
+| Model or tool slow or failing | Model client timeout and retries; a 60 second tool timeout | The model is told the tool timed out and says so; a model failure returns an error message |
+| One session asks too many questions | 10 questions per 10 minutes per session | The user is told how many seconds to wait |
 | Missing lead times | No such table | Agent asks for an assumption and labels it |
 | Agent service not running | `/health` on :8006 fails | Web app shows a connection error |
 | Agent service misconfigured | `/health` returns 503 and lists the problems (missing endpoint or missing `RLS_USER_ID`) | Chat returns a clear configuration error. The service refuses to default to a user |
@@ -225,5 +228,5 @@ RLS stops rows leaking, but a tool result can still leak by what it says about t
   4. **Self-correction is partial.** The agent retries after a tool error, and since 2026-10-13 every answer is checked before it is sent (D14): invented or mis-rounded figures, wrong arithmetic, a missing Scope line and a wrong network-total claim are sent back for up to 2 rewrites, then flagged to the user. It does not check reasoning, so a correct figure used to answer the wrong question passes. Checked on three live answers plus 24 unit and loop tests; the live runs also exposed and fixed two false alarms in the checker itself (a chained calculation and a decimal percentage).
   5. **One fixed identity.** The agent service uses one identity from `RLS_USER_ID`. Per-user identity needs sign-in, which is not built.
   6. Phase 3 is not formally closed, and success criteria E1 to E7 are still a draft.
-  7. **No cost figure, no request limits.** Tokens per question are logged and reported, but a price is not calculated, and nothing limits how many questions one session can ask. Retry on model errors and tool timeouts are also not built.
+  7. **No cost figure.** Tokens per question are logged and reported, but a price is not calculated. A session is limited to 10 questions in 10 minutes, and the model client retries up to 3 times (with its built-in backoff) and times out after 120 seconds. A tool call times out after 60 seconds. These limits are per session, held in memory, and a user can get a new session by opening a new tab, so they slow accidents and are not a defence against abuse.
   8. **Sessions are in memory** and are lost when the service restarts.

@@ -95,6 +95,42 @@ def test_content_filter_block_returns_a_clear_message_and_is_not_stored():
     assert items[-1] == {"done": True} and not agent_service.sessions.get("filter")
 
 
+def test_a_slow_tool_times_out_and_the_model_is_told():
+    call = SimpleNamespace(type="function", id="c1", function=SimpleNamespace(name="slow", arguments="{}"))
+
+    class ToolThenAnswer(ScriptedModel):
+        async def create(self, model, messages, tools):
+            self.sent.append([dict(m) for m in messages])
+            reply = self.replies.pop(0)
+            message = SimpleNamespace(content=reply, tool_calls=None if reply else [call])
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    async def never_returns(name, arguments):
+        await asyncio.sleep(5)
+
+    model = ToolThenAnswer([None, "Could not reach the tool."])
+    owner = SimpleNamespace(call_tool=never_returns)
+    app = SimpleNamespace(state=SimpleNamespace(openai=model, tools=TOOLS, tool_owners={"slow": owner}))
+    agent_service.evidence_store["slow"] = []
+    original, agent_service.TOOL_TIMEOUT_SECONDS = agent_service.TOOL_TIMEOUT_SECONDS, 0.05
+    try:
+        async def run():
+            return [item async for item in agent_service.run_turn(app, "slow", "question")]
+
+        items = asyncio.run(run())
+    finally:
+        agent_service.TOOL_TIMEOUT_SECONDS = original
+    assert "did not answer within" in model.sent[1][-1]["content"]
+    assert items[-1] == {"done": True}
+
+
+def test_a_session_that_asks_too_often_is_told_to_wait():
+    limit = agent_service.RATE_LIMIT_QUESTIONS
+    assert [agent_service.rate_limit_wait("busy") for _ in range(limit)] == [0] * limit
+    assert 0 < agent_service.rate_limit_wait("busy") <= agent_service.RATE_LIMIT_WINDOW_SECONDS + 1
+    assert agent_service.rate_limit_wait("someone else") == 0
+
+
 if __name__ == "__main__":
     tests = [fn for name, fn in sorted(globals().items()) if name.startswith("test_")]
     for fn in tests:
