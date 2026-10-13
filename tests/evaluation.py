@@ -77,6 +77,7 @@ async def ground_truth() -> dict:
         "tacoma_hardware_stock": int(tacoma_hardware[0]["s"]),
         "paint_names": [r["product_name"] for r in paint],
         "network_excess": float(excess),
+        "total_stock": int((await sql_rows(GLOBAL, "SELECT SUM(stock_level) AS s FROM retail.inventory"))[0]["s"]),
         "orders": (await sql_rows(GLOBAL, "SELECT COUNT(*) AS n FROM retail.orders"))[0]["n"],
     }
 
@@ -120,8 +121,8 @@ def build_cases(t: dict) -> list[Case]:
              lambda a: collect((("Weatherproof Box" in a or "Weather Resistant Outlet" in a), "expected outdoor electrical product"))),
         # Edge cases
         Case("E1", "Edge case", "global", "How much stock do we have?",
-             "Answers with a stated assumption instead of asking what is meant.",
-             lambda a: collect((not a.strip().endswith("?"), "ended by asking a question"), (bool(re.search(r"\d", a)), "no figures"))),
+             f"Answers with the network stock total ({t['total_stock']:,} units) and a stated assumption, not a question.",
+             lambda a: collect((has(a, t["total_stock"]), "stock total"), (not re.match(r"(?s)^[^\n]*\?\s*$", a.strip()), "only asked a question"))),
         Case("E2", "Edge case", "global", "What happened in 1999?",
              "Says there is no data for 1999 and invents nothing.",
              lambda a: collect((bool(DECLINE.search(a) or re.search(r"(?i)\bno (orders|sales|data)", a)), "did not say there is no data"), ("Verification note" not in a, "verification note present"))),

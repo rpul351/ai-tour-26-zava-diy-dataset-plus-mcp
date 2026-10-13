@@ -72,6 +72,29 @@ def test_revision_history_is_not_stored_in_the_session():
     assert stored[-1]["content"] == "Nothing to report."
 
 
+def test_content_filter_block_returns_a_clear_message_and_is_not_stored():
+    import httpx
+    from openai import BadRequestError
+
+    response = httpx.Response(400, request=httpx.Request("POST", "http://test"))
+    blocked = BadRequestError("filtered", response=response, body={"code": "content_filter"})
+    agent_service.evidence_store["filter"] = []
+    model = ScriptedModel([])
+
+    async def refuse(model, messages, tools):
+        raise blocked
+
+    model.chat.completions.create = refuse
+    app = SimpleNamespace(state=SimpleNamespace(openai=model, tools=TOOLS, tool_owners={}))
+
+    async def run():
+        return [item async for item in agent_service.run_turn(app, "filter", "question")]
+
+    items = asyncio.run(run())
+    assert "".join(i.get("content", "") for i in items) == agent_service.CONTENT_FILTER_MESSAGE
+    assert items[-1] == {"done": True} and not agent_service.sessions.get("filter")
+
+
 if __name__ == "__main__":
     tests = [fn for name, fn in sorted(globals().items()) if name.startswith("test_")]
     for fn in tests:

@@ -29,7 +29,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse, StreamingResponse
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from openai import AsyncAzureOpenAI
+from openai import AsyncAzureOpenAI, BadRequestError
 from pydantic import BaseModel, Field
 
 from answer_verifier import verify_answer
@@ -59,6 +59,10 @@ MAX_STORED_MESSAGES = 20
 STREAM_CHUNK_CHARS = 40
 LOG_DIR = Path(os.getenv("AGENT_LOG_DIR") or Path(__file__).resolve().parents[3] / "logs")
 MAX_LOGGED_RESULT_CHARS = 2000
+CONTENT_FILTER_MESSAGE = (
+    "This request was blocked by the Azure OpenAI content policy, for example because it looks like an attempt "
+    "to override the assistant's instructions. Please rephrase it as a question about Zava inventory, stock or sales."
+)
 
 SYSTEM_PROMPT = """You are the Zava Inventory Advisor. You help inventory and store managers at Zava Retail decide what to do about stock. Today's date is {today}.
 
@@ -235,7 +239,15 @@ async def run_turn(app: FastAPI, session_id: str, message: str) -> AsyncGenerato
     working: list[dict[str, Any]] = [system, *history, {"role": "user", "content": message}]
 
     for _ in range(MAX_TOOL_ROUNDS):
-        response = await client.chat.completions.create(model=MODEL_DEPLOYMENT, messages=working, tools=tools)
+        try:
+            response = await client.chat.completions.create(model=MODEL_DEPLOYMENT, messages=working, tools=tools)
+        except BadRequestError as exc:
+            if exc.code != "content_filter":
+                raise
+            record("turn", session_id, question=message, error="content_filter", tool_calls=tool_count)
+            yield {"content": CONTENT_FILTER_MESSAGE}
+            yield {"done": True}
+            return
         usage = getattr(response, "usage", None)
         if usage:
             tokens["prompt"] += usage.prompt_tokens or 0

@@ -1121,16 +1121,16 @@ class PostgreSQLSchemaProvider:
             columns = list(rows[0].keys()) + ["peak_month", "months_until_peak", "peak_is_near", "clearance_guard"]
             return json.dumps(
                 {
-                    "results": results,
-                    "row_count": len(results),
-                    "columns": columns,
-                    "parameters": parameters,
                     "scope": scope,
                     "notes": [
                         "Values are at cost. They are an upper bound on the cash released by clearing, not the cash itself.",
                         "Stock levels are a snapshot and are not tied to sales history, so excess is within this dataset.",
                         "clearance_guard comes from the product's category seasonal peak. Do not recommend clearing when it says do not clear.",
                     ],
+                    "parameters": parameters,
+                    "row_count": len(results),
+                    "columns": columns,
+                    "results": results,
                 },
                 indent=2,
                 default=str,
@@ -1267,12 +1267,12 @@ class PostgreSQLSchemaProvider:
                 notes.append("Only one store is visible to this user, so there is nothing to compare against other stores.")
             return json.dumps(
                 {
-                    "results": [dict(r) for r in rows],
-                    "row_count": len(rows),
-                    "columns": list(rows[0].keys()),
-                    "parameters": parameters,
                     "scope": scope,
                     "notes": notes,
+                    "parameters": parameters,
+                    "row_count": len(rows),
+                    "columns": list(rows[0].keys()),
+                    "results": [dict(r) for r in rows],
                 },
                 indent=2,
                 default=str,
