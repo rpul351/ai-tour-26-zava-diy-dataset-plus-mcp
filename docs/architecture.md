@@ -2,7 +2,7 @@
 
 Phase 4 (Design) deliverable. Status as of 2026-10-13.
 
-> **Open item:** Phase 3 has not been formally signed off. This design covers all three problems identified from the data (decision log D1, D9). A draft use case definition and the five-test table are in `docs/use-case.md`, pending team agreement. Revisit it and the success criteria in section 7 once Phase 3 is closed.
+> **Open item:** Phase 3 has not been formally signed off. This design covers all three problems identified from the data (decision log D1, D9). A draft use case definition and the five-test table are in `docs/use_case_phase3.md`, pending team agreement. Revisit it and the success criteria in section 7 once Phase 3 is closed.
 
 ## 1. Problems and approach
 
