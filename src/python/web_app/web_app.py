@@ -19,7 +19,7 @@ from typing import AsyncGenerator, Dict, List
 sys.path.append(str(Path(__file__).parent.parent / "workshop"))
 
 import httpx
-from fastapi import FastAPI, Form, HTTPException, UploadFile
+from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -100,7 +100,7 @@ class WebApp:
         except Exception as e:
             return {"error": f"Error processing file: {e!s}"}
     
-    async def stream_chat(self, message: str = "", session_id: str = "") -> StreamingResponse:
+    async def stream_chat(self, request: Request, message: str = "", session_id: str = "") -> StreamingResponse:
         """Stream chat responses by proxying to the agent service."""
         if not message.strip():
             return StreamingResponse(
@@ -118,7 +118,7 @@ class WebApp:
         self.chat_sessions[session_id].append({"role": "user", "content": message})
 
         return StreamingResponse(
-            self._generate_stream(message, session_id),
+            self._generate_stream(message, session_id, getattr(request.state, "zava_user", None)),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache", 
@@ -129,7 +129,7 @@ class WebApp:
             },
         )
     
-    async def _generate_stream(self, message: str, session_id: str) -> AsyncGenerator[str, None]:
+    async def _generate_stream(self, message: str, session_id: str, user: str | None = None) -> AsyncGenerator[str, None]:
         """Generate streaming response by proxying to agent service."""
         try:
             async with httpx.AsyncClient(timeout=120.0) as client:
@@ -143,7 +143,7 @@ class WebApp:
                     "POST",
                     f"{AGENT_SERVICE_URL}/chat/stream",
                     json=request_data,
-                    headers={"Accept": "text/event-stream"}
+                    headers={"Accept": "text/event-stream", **({"X-Zava-User": user} if user else {})}
                 ) as response:
                     if response.status_code != 200:
                         yield f"data: {json.dumps({'error': f'Agent service error: {response.status_code}'})}\n\n"
@@ -251,6 +251,9 @@ app = FastAPI(title="Azure AI Agent Web Interface")
 
 # Initialize web app
 web_app = WebApp(app)
+
+from temp_access import install_temp_access  # TEMP ACCESS: remove before deploying to Azure
+install_temp_access(app)  # TEMP ACCESS: remove before deploying to Azure
 
 
 if __name__ == "__main__":

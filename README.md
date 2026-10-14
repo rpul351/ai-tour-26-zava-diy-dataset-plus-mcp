@@ -44,7 +44,7 @@ Every answer is checked in code before it is sent. Figures must match a tool res
 ### Test it
 
 ```bash
-(cd src/python/workshop && python test_answer_verifier.py && python test_agent_verification_loop.py)
+(cd src/python/workshop && python test_answer_verifier.py && python test_agent_verification_loop.py && python test_access.py)
 python -m unittest tests.test_inventory_advisor            # tool tests against the live database
 RUN_AGENT_TESTS=1 python -m unittest tests.test_inventory_advisor   # also runs the agent (calls the model)
 python -m tests.evaluation                                  # 23 questions, writes docs/evaluation.md (about 7 minutes)
@@ -54,10 +54,24 @@ python -m tests.evaluation                                  # 23 questions, writ
 
 Every question, tool call, timing, token count and prompt version is appended to `logs/agent_calls.jsonl` (ignored by git). The log holds the questions users ask, so treat it as private.
 
+### Team testing: who sees what
+
+The agent can give each person their own view. A **super manager** sees all 8 stores. A **store manager** sees only one store, enforced by the database. Anyone not on the list gets nothing.
+
+1. Copy `src/python/workshop/access_list.example.json` to `access_list.json` and edit it. Each entry is a name with the role `super_manager`, or `store_manager` plus a `store`. The real file is ignored by git.
+2. Set `ACCESS_LIST_FILE` to the full path of that file before starting the agent service (for example `ACCESS_LIST_FILE=/workspace/src/python/workshop/access_list.json python agent_service.py`, or add it to `.env`).
+3. Make a temporary access code for each person: `cd src/python/web_app && python temp_access.py generate name1 name2`. Give each person only their own code. The names must match the access list. The web app will not start without a codes file.
+4. Run the agent service and the web app, expose port 8005 (VS Code Ports panel), and share the link plus the person's code. They sign in once, and a cookie lasts 8 hours.
+5. `/health` on the agent service shows how many people are on the list and how many identities are running. The call log records the person and identity on every call.
+
+Without `ACCESS_LIST_FILE` the service uses the single `RLS_USER_ID` from `.env`, as before.
+
+**Before deploying to Azure, remove the temporary access code:** delete `src/python/web_app/temp_access.py`, `test_temp_access.py` and `temp_access_codes.json`, and the two lines marked `TEMP ACCESS` in `web_app.py`. Keep the access list and the agent service changes: in Azure the signed-in user from the platform replaces the code, and the same list decides who sees what. The agent service must then be reachable only through the web app.
+
 ### Known limits
 
 - Stock levels in the dataset are synthetic and are not tied to sales, so the size of the excess reflects how the data was generated.
-- One running agent service has one identity. Per-user sign-in is not built.
+- Each person's identity comes from the access list (see below). Real sign-in is not built: locally a temporary access code stands in for it.
 - Conversations are held in memory and are lost when the service restarts.
 - Questions are limited to 10 per 10 minutes per session, the model client retries 3 times, and a tool call times out after 60 seconds. Tokens are logged but there is no cost figure.
 

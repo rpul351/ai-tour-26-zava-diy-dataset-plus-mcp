@@ -27,13 +27,14 @@ from typing import Any
 import uvicorn
 from azure.identity.aio import DefaultAzureCredential, get_bearer_token_provider
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Header
 from fastapi.responses import JSONResponse, StreamingResponse
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from openai import AsyncAzureOpenAI, BadRequestError
 from pydantic import BaseModel, Field
 
+from access import AccessList, load_access_list, normalise
 from answer_verifier import verify_answer
 
 load_dotenv(Path(__file__).resolve().parents[3] / ".env", override=False)
@@ -51,6 +52,15 @@ MCP_SERVERS = {
 }
 # No default on purpose: a missing identity must fail closed, not fall back to all stores.
 RLS_USER_ID = os.getenv("RLS_USER_ID", "").strip()
+# When set, each person gets the identity the list gives them and anyone not on it gets nothing.
+ACCESS_LIST_FILE = os.getenv("ACCESS_LIST_FILE", "").strip()
+ACCESS_LIST: AccessList | None = None
+ACCESS_LIST_ERROR = ""
+if ACCESS_LIST_FILE:
+    try:
+        ACCESS_LIST = load_access_list(Path(ACCESS_LIST_FILE))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        ACCESS_LIST_ERROR = f"ACCESS_LIST_FILE could not be used: {type(exc).__name__}: {exc}"
 API_VERSION = "2025-04-01-preview"
 
 MAX_TOOL_ROUNDS = 10
@@ -62,6 +72,7 @@ STREAM_CHUNK_CHARS = 40
 LOG_DIR = Path(os.getenv("AGENT_LOG_DIR") or Path(__file__).resolve().parents[3] / "logs")
 MAX_LOGGED_RESULT_CHARS = 2000
 TOOL_TIMEOUT_SECONDS = 60
+MCP_START_TIMEOUT_SECONDS = 120
 MODEL_TIMEOUT_SECONDS = 120
 MODEL_MAX_RETRIES = 3
 # Lower effort answers faster; the evaluation shows what it costs in accuracy.
@@ -154,6 +165,8 @@ async def lifespan(app: FastAPI):
     app.state.tools = []
     app.state.tool_owners = {}
     app.state.server_status = {}
+    app.state.pools = {}
+    app.state.pool_lock = asyncio.Lock()
     if AZURE_OPENAI_ENDPOINT:
         token_provider = get_bearer_token_provider(credential, "https://cognitiveservices.azure.com/.default")
         app.state.openai = AsyncAzureOpenAI(
@@ -164,38 +177,83 @@ async def lifespan(app: FastAPI):
             max_retries=MODEL_MAX_RETRIES,
         )
 
-    async with AsyncExitStack() as stack:
-        # No servers start without an identity, so a missing RLS_USER_ID fails closed.
-        for name, script in MCP_SERVERS.items() if RLS_USER_ID else []:
-            try:
-                params = StdioServerParameters(
-                    command=sys.executable,
-                    args=[str(script), "--stdio", f"--RLS_USER_ID={RLS_USER_ID}"],
-                    env=dict(os.environ),
-                )
-                read, write = await stack.enter_async_context(stdio_client(params))
-                session = await stack.enter_async_context(ClientSession(read, write))
-                await session.initialize()
-                listed = (await session.list_tools()).tools
-            except Exception as exc:  # noqa: BLE001 - one broken server must not stop the others
-                logger.warning("MCP server %s failed to start: %s", name, exc)
-                app.state.server_status[name] = f"failed: {type(exc).__name__}"
-                continue
-            added = []
-            for tool in listed:
-                if tool.name in app.state.tool_owners:
-                    continue  # several servers define get_current_utc_date; keep the first
-                app.state.tool_owners[tool.name] = session
-                app.state.tools.append(tool)
-                added.append(tool.name)
-            app.state.server_status[name] = f"connected ({len(added)} tools)"
-        app.state.tools = to_openai_tools(app.state.tools)
+    try:
+        # A single configured identity starts now. Others start when their first user asks.
+        if RLS_USER_ID:
+            default = await get_pool(app, RLS_USER_ID)
+            app.state.tools, app.state.tool_owners, app.state.server_status = default.tools, default.owners, default.status
+        yield
+    finally:
+        for pool in app.state.pools.values():
+            pool.stop.set()
+        await asyncio.gather(*(p.task for p in app.state.pools.values() if p.task), return_exceptions=True)
+        if app.state.openai is not None:
+            await app.state.openai.close()
+        await credential.close()
+
+
+async def start_servers(stack: AsyncExitStack, rls_id: str) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, str]]:
+    """Start the three MCP servers for one identity. One broken server must not stop the others."""
+    tools: list[Any] = []
+    owners: dict[str, Any] = {}
+    status: dict[str, str] = {}
+    for name, script in MCP_SERVERS.items():
         try:
-            yield
+            params = StdioServerParameters(
+                command=sys.executable,
+                args=[str(script), "--stdio", f"--RLS_USER_ID={rls_id}"],
+                env=dict(os.environ),
+            )
+            read, write = await stack.enter_async_context(stdio_client(params))
+            session = await stack.enter_async_context(ClientSession(read, write))
+            await session.initialize()
+            listed = (await session.list_tools()).tools
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("MCP server %s failed to start: %s", name, exc)
+            status[name] = f"failed: {type(exc).__name__}"
+            continue
+        added = []
+        for tool in listed:
+            if tool.name in owners:
+                continue  # several servers define get_current_utc_date; keep the first
+            owners[tool.name] = session
+            tools.append(tool)
+            added.append(tool.name)
+        status[name] = f"connected ({len(added)} tools)"
+    return to_openai_tools(tools), owners, status
+
+
+class IdentityPool:
+    """The MCP servers for one identity. One task opens and closes them, as the stdio client requires."""
+
+    def __init__(self, rls_id: str) -> None:
+        self.rls_id = rls_id
+        self.tools: list[dict[str, Any]] = []
+        self.owners: dict[str, Any] = {}
+        self.status: dict[str, str] = {}
+        self.ready = asyncio.Event()
+        self.stop = asyncio.Event()
+        self.task: asyncio.Task | None = None
+
+    async def run(self) -> None:
+        try:
+            async with AsyncExitStack() as stack:
+                self.tools, self.owners, self.status = await start_servers(stack, self.rls_id)
+                self.ready.set()
+                await self.stop.wait()
         finally:
-            if app.state.openai is not None:
-                await app.state.openai.close()
-            await credential.close()
+            self.ready.set()
+
+
+async def get_pool(app: FastAPI, rls_id: str) -> IdentityPool:
+    async with app.state.pool_lock:
+        pool = app.state.pools.get(rls_id)
+        if pool is None:
+            pool = IdentityPool(rls_id)
+            pool.task = asyncio.create_task(pool.run())
+            app.state.pools[rls_id] = pool
+    await asyncio.wait_for(pool.ready.wait(), MCP_START_TIMEOUT_SECONDS)
+    return pool
 
 
 app = FastAPI(title="Zava Inventory Advisor Agent Service", lifespan=lifespan)
@@ -205,8 +263,10 @@ def config_problems() -> list[str]:
     problems = []
     if not AZURE_OPENAI_ENDPOINT:
         problems.append("AZURE_OPENAI_ENDPOINT is not set")
-    if not RLS_USER_ID:
-        problems.append("RLS_USER_ID is not set (refusing to default to a user)")
+    if ACCESS_LIST_ERROR:
+        problems.append(ACCESS_LIST_ERROR)
+    elif ACCESS_LIST is None and not RLS_USER_ID:
+        problems.append("Neither ACCESS_LIST_FILE nor RLS_USER_ID is set (refusing to default to a user)")
     return problems
 
 
@@ -248,9 +308,16 @@ def revision_request(problems: list[str]) -> str:
     )
 
 
-async def run_turn(app: FastAPI, session_id: str, message: str) -> AsyncGenerator[dict[str, Any], None]:
+async def run_turn(
+    app: FastAPI, session_id: str, message: str, rls_user_id: str | None = None, user: str | None = None
+) -> AsyncGenerator[dict[str, Any], None]:
     client: AsyncAzureOpenAI = app.state.openai
-    tools = app.state.tools
+    if rls_user_id is None:
+        tools, owners, identity = app.state.tools, app.state.tool_owners, RLS_USER_ID
+    else:
+        pool = await get_pool(app, rls_user_id)
+        tools, owners, identity = pool.tools, pool.owners, rls_user_id
+    log = {"user": user, "rls_user_id": identity}
     if not tools:
         yield {"error": "No MCP tools are available. Check /health for the server status."}
         return
@@ -271,7 +338,7 @@ async def run_turn(app: FastAPI, session_id: str, message: str) -> AsyncGenerato
         except BadRequestError as exc:
             if exc.code != "content_filter":
                 raise
-            record("turn", session_id, question=message, error="content_filter", tool_calls=tool_count)
+            record("turn", session_id, question=message, error="content_filter", tool_calls=tool_count, **log)
             yield {"content": CONTENT_FILTER_MESSAGE}
             yield {"done": True}
             return
@@ -299,6 +366,7 @@ async def run_turn(app: FastAPI, session_id: str, message: str) -> AsyncGenerato
             record(
                 "turn",
                 session_id,
+                **log,
                 question=message,
                 answer=answer,
                 revisions=revisions,
@@ -328,7 +396,7 @@ async def run_turn(app: FastAPI, session_id: str, message: str) -> AsyncGenerato
             }
         )
         for call in calls:
-            owner = app.state.tool_owners.get(call.function.name)
+            owner = owners.get(call.function.name)
             arguments: Any = call.function.arguments
             started = time.perf_counter()
             if owner is None:
@@ -348,6 +416,7 @@ async def run_turn(app: FastAPI, session_id: str, message: str) -> AsyncGenerato
             record(
                 "tool_call",
                 session_id,
+                **log,
                 tool=call.function.name,
                 arguments=arguments,
                 result=text[:MAX_LOGGED_RESULT_CHARS],
@@ -363,6 +432,7 @@ async def run_turn(app: FastAPI, session_id: str, message: str) -> AsyncGenerato
     record(
         "turn",
         session_id,
+        **log,
         question=message,
         error="too many tool calls",
         tool_calls=tool_count,
@@ -374,18 +444,30 @@ async def run_turn(app: FastAPI, session_id: str, message: str) -> AsyncGenerato
 
 
 @app.post("/chat/stream")
-async def chat_stream(request: ChatRequest) -> StreamingResponse:
+async def chat_stream(request: ChatRequest, x_zava_user: str | None = Header(default=None)) -> StreamingResponse:
     async def events() -> AsyncGenerator[str, None]:
         problems = config_problems()
         if problems:
             yield sse({"error": "Agent service is not configured: " + "; ".join(problems)})
             return
         try:
-            wait = rate_limit_wait(request.session_id)
+            rls_user_id: str | None = None
+            user: str | None = None
+            session_key = limit_key = request.session_id
+            if ACCESS_LIST is not None:
+                user = normalise(x_zava_user)
+                rls_user_id = ACCESS_LIST.rls_id_for(user)
+                if rls_user_id is None:
+                    record("denied", request.session_id, user=user or None)
+                    yield sse({"error": "You are not on the access list for this agent."})
+                    return
+                # Sessions and limits belong to the person, so nobody can read or use up another's.
+                session_key, limit_key = f"{user}:{request.session_id}", user
+            wait = rate_limit_wait(limit_key)
             if wait:
-                yield sse({"error": f"Too many questions from this session. Please wait {wait} seconds and try again."})
+                yield sse({"error": f"Too many questions. Please wait {wait} seconds and try again."})
                 return
-            async for item in run_turn(app, request.session_id, request.message):
+            async for item in run_turn(app, session_key, request.message, rls_user_id, user):
                 yield sse(item)
         except Exception as exc:  # noqa: BLE001 - report to the client instead of dropping the stream
             logger.exception("Chat turn failed")
@@ -406,7 +488,7 @@ async def health() -> JSONResponse:
     servers = app.state.server_status
     failed = [name for name, status in servers.items() if status.startswith("failed")]
     problems += [f"MCP server {name} {servers[name]}" for name in failed]
-    usable = bool(app.state.tools) and not config_problems()
+    usable = (bool(app.state.tools) or ACCESS_LIST is not None) and not config_problems()
     status = "healthy" if not problems else ("degraded" if usable else "misconfigured")
     body = {
         "status": status,
@@ -414,6 +496,8 @@ async def health() -> JSONResponse:
         "prompt_version": PROMPT_VERSION,
         "mcp_servers": servers,
         "tool_count": len(app.state.tools),
+        "access_list_users": len(ACCESS_LIST.users) if ACCESS_LIST else None,
+        "identities_running": len(app.state.pools),
         "problems": problems,
     }
     return JSONResponse(body, status_code=200 if usable else 503)

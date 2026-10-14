@@ -131,6 +131,144 @@ def test_a_session_that_asks_too_often_is_told_to_wait():
     assert agent_service.rate_limit_wait("someone else") == 0
 
 
+import contextlib  # noqa: E402
+import json  # noqa: E402
+
+from access import GLOBAL_RLS_ID, STORE_RLS_IDS, AccessList  # noqa: E402
+
+
+@contextlib.contextmanager
+def chat_endpoint(acl, rls_user_id=""):
+    """Call the real /chat/stream route with a fake turn, recording what the route passed to run_turn."""
+    from fastapi.testclient import TestClient
+
+    calls = []
+
+    async def fake_run_turn(app, session_key, message, rls=None, user=None):
+        calls.append({"session": session_key, "rls": rls, "user": user})
+        yield {"content": "ok"}
+        yield {"done": True}
+
+    names = ("ACCESS_LIST", "ACCESS_LIST_ERROR", "AZURE_OPENAI_ENDPOINT", "RLS_USER_ID", "run_turn")
+    saved = {n: getattr(agent_service, n) for n in names}
+    agent_service.ACCESS_LIST, agent_service.ACCESS_LIST_ERROR = acl, ""
+    agent_service.AZURE_OPENAI_ENDPOINT, agent_service.RLS_USER_ID = "test", rls_user_id
+    agent_service.run_turn = fake_run_turn
+    try:
+        client = TestClient(agent_service.app)
+
+        def ask(user, session="tab1"):
+            headers = {"X-Zava-User": user} if user is not None else {}
+            response = client.post("/chat/stream", json={"message": "hi", "session_id": session}, headers=headers)
+            return [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
+
+        yield ask, calls
+    finally:
+        for n, v in saved.items():
+            setattr(agent_service, n, v)
+
+
+def test_a_person_on_the_list_gets_their_own_identity_and_session():
+    acl = AccessList({"alice-a": GLOBAL_RLS_ID, "kim-a": STORE_RLS_IDS["Zava Retail Kirkland"]})
+    with chat_endpoint(acl) as (ask, calls):
+        ask("Alice-A"), ask("kim-a")
+    assert calls[0] == {"session": "alice-a:tab1", "rls": GLOBAL_RLS_ID, "user": "alice-a"}
+    assert calls[1]["rls"] == STORE_RLS_IDS["Zava Retail Kirkland"] and calls[1]["session"] == "kim-a:tab1"
+
+
+def test_someone_not_on_the_list_is_refused_before_any_tool_runs():
+    with chat_endpoint(AccessList({"alice-b": GLOBAL_RLS_ID})) as (ask, calls):
+        for user in ("mallory", "", None):
+            events = ask(user)
+            assert events and "not on the access list" in events[0]["error"], user
+    assert calls == []
+
+
+def test_the_limit_belongs_to_the_person_not_the_session():
+    acl = AccessList({"alice-c": GLOBAL_RLS_ID, "bob-c": GLOBAL_RLS_ID})
+    with chat_endpoint(acl) as (ask, calls):
+        for i in range(agent_service.RATE_LIMIT_QUESTIONS):
+            assert "error" not in ask("alice-c", session=f"new-tab-{i}")[0]
+        assert "Too many questions" in ask("alice-c", session="yet-another-tab")[0]["error"]
+        assert "error" not in ask("bob-c")[0]
+
+
+def test_without_an_access_list_the_single_configured_identity_is_used():
+    with chat_endpoint(None, rls_user_id="some-id") as (ask, calls):
+        assert "error" not in ask(None, session="legacy")[0]
+    assert calls[0]["rls"] is None and calls[0]["session"] == "legacy"
+
+
+def test_a_broken_access_list_stops_the_service_instead_of_opening_it():
+    saved = agent_service.ACCESS_LIST_ERROR, agent_service.AZURE_OPENAI_ENDPOINT
+    agent_service.ACCESS_LIST_ERROR, agent_service.AZURE_OPENAI_ENDPOINT = "ACCESS_LIST_FILE could not be used: boom", "test"
+    try:
+        assert any("ACCESS_LIST_FILE" in p for p in agent_service.config_problems())
+    finally:
+        agent_service.ACCESS_LIST_ERROR, agent_service.AZURE_OPENAI_ENDPOINT = saved
+
+
+def test_each_identity_gets_its_own_tools_and_they_start_once():
+    started = []
+
+    async def fake_start(stack, rls_id):
+        started.append(rls_id)
+        return [{"id": rls_id}], {"tool": rls_id}, {"server": "connected"}
+
+    original, agent_service.start_servers = agent_service.start_servers, fake_start
+    try:
+        async def run():
+            app = SimpleNamespace(state=SimpleNamespace(pools={}, pool_lock=asyncio.Lock()))
+            first = await agent_service.get_pool(app, "A")
+            again = await agent_service.get_pool(app, "A")
+            other = await agent_service.get_pool(app, "B")
+            for pool in app.state.pools.values():
+                pool.stop.set()
+            await asyncio.gather(*(p.task for p in app.state.pools.values()))
+            return first, again, other
+
+        first, again, other = asyncio.run(run())
+    finally:
+        agent_service.start_servers = original
+    assert first is again and first is not other
+    assert started == ["A", "B"] and other.owners == {"tool": "B"}
+
+
+def test_a_turn_uses_the_identitys_tools_and_the_log_names_the_person():
+    call = SimpleNamespace(type="function", id="c1", function=SimpleNamespace(name="data", arguments="{}"))
+    used = []
+
+    class CallThenAnswer(ScriptedModel):
+        async def create(self, model, messages, tools, **kwargs):
+            self.sent.append([dict(m) for m in messages])
+            reply = self.replies.pop(0)
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=reply, tool_calls=None if reply else [call]))])
+
+    async def data_tool(name, arguments):
+        used.append(name)
+        return SimpleNamespace(content=[SimpleNamespace(text='{"units": 5}')], isError=False)
+
+    async def fake_pool(app, rls_id):
+        return SimpleNamespace(tools=TOOLS, owners={"data": SimpleNamespace(call_tool=data_tool)})
+
+    original, agent_service.get_pool = agent_service.get_pool, fake_pool
+    agent_service.evidence_store["log-a:t"] = []
+    try:
+        app = SimpleNamespace(state=SimpleNamespace(openai=CallThenAnswer([None, "Done."]), tools=[], tool_owners={}))
+
+        async def run():
+            return [i async for i in agent_service.run_turn(app, "log-a:t", "question", "identity-for-log-a", "log-a")]
+
+        items = asyncio.run(run())
+    finally:
+        agent_service.get_pool = original
+    assert used == ["data"] and items[-1] == {"done": True}
+    rows = [json.loads(line) for line in (agent_service.LOG_DIR / "agent_calls.jsonl").read_text().splitlines()]
+    mine = [r for r in rows if r.get("user") == "log-a"]
+    assert {r["event"] for r in mine} == {"tool_call", "turn"}
+    assert all(r["rls_user_id"] == "identity-for-log-a" for r in mine)
+
+
 if __name__ == "__main__":
     tests = [fn for name, fn in sorted(globals().items()) if name.startswith("test_")]
     for fn in tests:
