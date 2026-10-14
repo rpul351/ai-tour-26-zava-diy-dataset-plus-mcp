@@ -26,6 +26,17 @@ def normalise(name: str | None) -> str:
     return (name or "").strip().lower()
 
 
+def describe_viewer(rls_id: str | None, user: str | None = None) -> str:
+    """One sentence for the model saying who is asking, taken from the identity the service chose."""
+    if rls_id == GLOBAL_RLS_ID:
+        access = f"a super manager who can see all {len(STORE_RLS_IDS)} stores"
+    else:
+        store = next((s for s, i in STORE_RLS_IDS.items() if i == rls_id), None)
+        access = f"a store manager who can see only {store}" if store else "a user whose access is not known, so assume the narrowest"
+    name = normalise(user).replace("-", " ").title()
+    return f"The person asking is {name}, {access}." if name else f"The person asking is {access}."
+
+
 class AccessList:
     def __init__(self, users: dict[str, str]) -> None:
         self.users = users

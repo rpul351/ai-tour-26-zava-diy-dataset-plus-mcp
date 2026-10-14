@@ -4,7 +4,7 @@ import json
 import tempfile
 from pathlib import Path
 
-from access import GLOBAL_RLS_ID, STORE_RLS_IDS, load_access_list
+from access import GLOBAL_RLS_ID, STORE_RLS_IDS, describe_viewer, load_access_list
 
 
 def write(users) -> Path:
@@ -64,6 +64,17 @@ def test_a_missing_list_raises_so_the_service_fails_closed():
 def test_every_store_in_the_example_file_is_valid():
     example = Path(__file__).with_name("access_list.example.json")
     assert len(load_access_list(example).users) >= 2
+
+
+def test_the_model_is_told_who_is_asking_from_the_identity():
+    assert "super manager" in describe_viewer(GLOBAL_RLS_ID) and "all 8 stores" in describe_viewer(GLOBAL_RLS_ID)
+    kirkland = describe_viewer(STORE_RLS_IDS["Zava Retail Kirkland"], "ranjith-pulluri")
+    assert "Ranjith Pulluri" in kirkland and "only Zava Retail Kirkland" in kirkland and "super manager" not in kirkland
+
+
+def test_an_unknown_identity_is_described_as_the_narrowest():
+    text = describe_viewer("not-a-real-id")
+    assert "narrowest" in text and "super manager" not in text
 
 
 if __name__ == "__main__":

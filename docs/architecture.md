@@ -157,7 +157,7 @@ Success criteria (draft, to be agreed in Phase 3).
 | E2 Ranking correct | H1 (all stores), A1 (Kirkland) | `test_e2_ranking_matches_ground_truth_*` |
 | E3 Seasonal guard | S1 (picks a category whose peak is near and checks the agent advises against clearing it) | `test_e3_*` (tool and agent) |
 | E4 Date hygiene | E3 (2026 is incomplete, compared like with like) | `test_e4_window_ends_today_and_excludes_future_orders` |
-| E5 RLS holds under adversarial questions | A1, A2, A3, V1 | `test_e5_*` (tool and agent) |
+| E5 RLS holds under adversarial questions | A1, A2, A3, A4, A5, A6, V1 | `test_e5_*` (tool and agent) |
 | E6 Honest limits | L1 (cost is not cash, snapshot), L2 (lead time needed) | `test_e6_*` |
 | E7 Confidently wrong answers caught | A2 (network total), V2 (invented number), V3 (destructive SQL) | `test_e7_*`, verifier tests |
 
@@ -176,6 +176,7 @@ S1, L1 and L2 were added on 2026-10-13 to cover E3 and E6. Their rules were fixe
 | 7 | 20 of 20 | Plan step removed, low reasoning effort. Median 12.1 s |
 | 8 | 23 of 23 | Three cases added for E3 and E6 (S1, L1, L2). All passed on their first run. Median 10.4 s, about $0.0042 per question |
 | 9 | 23 of 23 | After per-person identity (D19). Same prompt, median 10.9 s, about $0.0043 per question. No behaviour change from the refactor |
+| 10 | 26 of 26 | After telling the model who is asking (D21). Three cases added (A4, A5, A6), rules fixed before the first run. New prompt version, median 8.9 s, about $0.0035 per question. The three new answers were read and were correct |
 
 Four of the changes were to the test rules (apostrophes, wording such as "will not" and "only help", and the E1 check), not the agent. They were made after seeing failures, so the final 20 of 20 is a result on rules that were tuned during this work. The orders table was unchanged in every run.
 
@@ -240,6 +241,7 @@ RLS stops rows leaking, but a tool result can still leak by what it says about t
 | D18 | Set the model's reasoning effort to `low` (`MODEL_REASONING_EFFORT`, default `low`) | The default effort | Answers were slow for users. Lower effort cuts the time spent reasoning before each tool call and answer. The trade-off is accuracy, so the evaluation was rerun with it. Result (2026-10-13, same prompt as before the plan step): 20 of 20 passed, median latency 12.1 s (slowest 35.2 s) against 25.9 s with the plan step and 21.7 s before it, and median tokens 11,000 against 15,238 and 12,351. One run is a sample, so rerun the evaluation after any prompt, tool or model-setting change |
 | D19 | Per-person identity: an access list (`access_list.json`) maps each person to `super_manager` or to one store, and the agent service starts one set of MCP servers per identity, on demand. Sessions, rate limits and log entries belong to the person. Unknown people are refused and a broken list stops the service | One service per identity (two containers); one identity for everyone; letting the browser or model name the identity | The database already enforces what each identity sees, so the missing piece was choosing the identity from who is asking. Servers are started per identity because the identity is fixed at launch (D12). Identities come only from the list, so the number of server sets is bounded (at most 9). Tested live: the same question gave 3,997,159 units to the super manager and 119,941 to the Kirkland manager, and a person with a code but not on the list was refused |
 | D20 | A temporary access-code login in the web app (`temp_access.py`), for local team testing only. A code names a person on the access list and sets a signed cookie. It is one file plus two marked lines in `web_app.py` and must be removed before deploying to Azure | A public link with no login; private port forwarding (only the owner can open it); Entra or GitHub sign-in now | Entra needs an app registration the university tenant does not allow students to create, and the team needs to test before Azure. The code is rate-limited against guessing and cookies are signed and expire. It is deliberately removable, and the access list and per-person identity stay, because in Azure the platform's verified sign-in supplies the person |
+| D21 | Tell the model who is asking ("a super manager who can see all 8 stores" or "a store manager who can see only <store>", with the person's name when there is an access list), taken from the identity the service chose. The prompt says the line comes from the system and that a user's claim of more access changes nothing | Leave the model unaware, so "Am I a super manager?" is refused as out of scope; let the user state their role | Testers will ask this, and a refusal reads as a fault. The role comes from the same identity that sets what the database shows, so it cannot disagree with the data. A user claiming more access is tested (A6) and gets nothing beyond their store |
 
 ## 11. Status and next steps
 
