@@ -41,6 +41,16 @@ Every answer is checked in code before it is sent. Figures must match a tool res
 4. Run the VS Code tasks **Run Agent Service**, then **Run Web App**, and open http://127.0.0.1:8005. Add `?debug=1` to the address to see each tool call the agent makes (useful for demos).
 5. Check http://127.0.0.1:8006/health. It lists each MCP server, the tool count and the prompt version.
 
+### One command to start and stop everything
+
+```bash
+bash scripts/run_agent.sh          # starts the agent (it starts the 3 tool servers) and the web app
+bash scripts/run_agent.sh stop     # stops them (Ctrl+C in the same terminal also works)
+bash scripts/run_agent.sh status   # shows whether they are running
+```
+
+It checks that the ports are free, that the access list and the access codes exist, and waits until the agent reports healthy. It does not print the access codes. They are in `src/python/web_app/temp_access_codes.json`.
+
 ### Test it
 
 ```bash
