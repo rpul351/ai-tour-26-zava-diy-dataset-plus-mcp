@@ -4,6 +4,8 @@ __pycache__
 .DS_Store
 .ruff_cache
 .env
+# Agent call log: holds questions, answers and identities
+logs/
 .coverage
 *.orig
 # .NET stuff
@@ -25,3 +27,7 @@ DevTunnels/devtunnels-tokens-microsoft
 DevTunnels/devtunnels.json
 infra/output.json
 infra/deploy.err
+
+# Real access list and temporary test codes (names and codes stay local)
+src/python/workshop/access_list.json
+src/python/web_app/temp_access_codes.json

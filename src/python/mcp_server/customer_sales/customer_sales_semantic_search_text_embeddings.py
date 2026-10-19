@@ -25,6 +25,11 @@ from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from dotenv import load_dotenv
 from openai import AzureOpenAI
 
+import sys
+from functools import partial
+
+print = partial(print, file=sys.stderr)  # stdout carries the MCP protocol in stdio mode
+
 
 class SemanticSearchTextEmbedding:
     """Handles semantic search operations using Azure OpenAI embeddings."""

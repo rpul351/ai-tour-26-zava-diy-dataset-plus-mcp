@@ -1,0 +1,8 @@
+{
+  "users": {
+    "professor-name": { "role": "super_manager" },
+    "teammate-one": { "role": "super_manager" },
+    "teammate-two": { "role": "store_manager", "store": "Zava Retail Kirkland" },
+    "teammate-three": { "role": "store_manager", "store": "Zava Retail Seattle" }
+  }
+}

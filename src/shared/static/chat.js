@@ -7,6 +7,26 @@ const fileInput = document.getElementById('fileInput');
 let isStreaming = false;
 let uploadedFile = null;
 
+// One id per browser tab, so people using the same server do not share a conversation.
+const sessionId = sessionStorage.getItem('sessionId') || (() => {
+    const id = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2));
+    sessionStorage.setItem('sessionId', id);
+    return id;
+})();
+
+// Tool calls are technical detail: shown only when the page is opened with ?debug=1 (for demos).
+const SHOW_TOOL_CALLS = new URLSearchParams(window.location.search).has('debug');
+
+// Show one tool call the agent made, above its answer.
+function addToolCall(toolsDiv, tool) {
+    const line = document.createElement('div');
+    const args = Object.entries(tool.arguments || {}).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(', ');
+    line.textContent = `\u{1F527} ${tool.name}(${args}) \u00B7 ${tool.ms} ms`;
+    line.style.cssText = 'font-size:0.8em;color:#6c757d;font-family:monospace;margin:2px 0;word-break:break-all;';
+    toolsDiv.appendChild(line);
+    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+}
+
 // Add message to chat
 function addMessage(content, isUser) {
     const messageDiv = document.createElement('div');
@@ -114,8 +134,11 @@ async function sendMessage() {
         
         // Use EventSource for Server-Sent Events
         const eventSource = new EventSource('/chat/stream?' + new URLSearchParams({
-            message: finalMessage
+            message: finalMessage,
+            session_id: sessionId
         }));
+        
+        let toolsDiv = null;
         
         let assistantMessage = '';
         let renderTimeout = null;
@@ -212,7 +235,15 @@ async function sendMessage() {
             
             try {
                 const parsed = JSON.parse(event.data);
-                if (parsed.content) {
+                if (parsed.tool) {
+                    if (SHOW_TOOL_CALLS) {
+                        if (!toolsDiv) {
+                            toolsDiv = document.createElement('div');
+                            messagesDiv.insertBefore(toolsDiv, assistantDiv);
+                        }
+                        addToolCall(toolsDiv, parsed.tool);
+                    }
+                } else if (parsed.content) {
                     // Handle regular text content (backward compatibility)
                     assistantMessage += parsed.content;
                     // Schedule progressive markdown rendering

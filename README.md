@@ -18,6 +18,88 @@ The dataset simulates **Zava DIY**, a Washington State-based home improvement re
 
 Fork this repository to get started with the Zava DIY dataset and MCP servers. The project is designed to be used in a development container for easy setup and includes scripts for deploying Azure resources if you want to integrate with Azure AI services. Then make it your own by customizing the dataset, MCP servers, or building new applications on top of the provided infrastructure..
 
+## Zava Inventory Advisor (agent)
+
+An agent that helps inventory and store managers decide what to do about stock. It answers only through the three MCP servers, never from its own database connection. It covers three problems: excess stock and capital tied up, store stock that does not follow demand, and seasonal demand. The design is in [docs/architecture.md](docs/architecture.md) and the test results are in [docs/evaluation.md](docs/evaluation.md).
+
+```text
+Browser -> web app (:8005) -> agent service (:8006) -> 3 MCP servers (stdio) -> PostgreSQL (Row Level Security)
+```
+
+Every answer is checked in code before it is sent. Figures must match a tool result, calculations are recomputed, and a network total can only be claimed when the user can see every store.
+
+### Quick start for a teammate
+
+1. Open the repo in the dev container (it brings Python 3.13 and the database).
+2. `pip install -r src/python/requirements.txt`
+3. `az login --use-device-code`. Your Azure account needs permission to call the Azure OpenAI resource; ask the project owner to grant it.
+4. `cp .env.example .env` and fill in the values listed under "Run it" step 2 (the endpoint and deployment names come from the project owner).
+5. `cp src/python/workshop/access_list.example.json src/python/workshop/access_list.json` and put your own name in it (role `super_manager`, or `store_manager` with a `store`).
+6. `cd src/python/web_app && python temp_access.py generate <your-name>` prints your access code once; keep it private. Then `cd ../../..`.
+7. Start: `bash scripts/run_agent.sh`. Leave that terminal open. Wait for "Ready", then open http://127.0.0.1:8005 and sign in with your code.
+8. Stop: press Ctrl+C in that terminal, or from another terminal run `bash scripts/run_agent.sh stop`. Check with `bash scripts/run_agent.sh status`.
+
+If it fails to start, the script says why; the logs are `logs/agent_service.out` and `logs/web_app.out`. Port 8006 is the back end only and has no page.
+
+### Run it
+
+1. Sign in to Azure (`az login`). The agent calls Azure OpenAI with your Azure sign-in, not a key.
+2. Copy `.env.example` to `.env` and set:
+   - `AZURE_OPENAI_ENDPOINT`: your Azure OpenAI endpoint
+   - `GPT_MODEL_DEPLOYMENT_NAME`: the chat model deployment (the agent was tested with `gpt-5-mini`)
+   - `EMBEDDING_MODEL_DEPLOYMENT_NAME`: the embedding deployment (used by semantic product search)
+   - `RLS_USER_ID`: whose data the agent may see. The all-zeros ID sees all 8 stores. A store ID sees only that store. There is no default, and the agent refuses to start tools without one
+   - `MODEL_REASONING_EFFORT` (optional): `minimal`, `low` (default), `medium` or `high`. Lower is faster; higher may be more accurate
+3. Make sure the database is running and the `store_manager` role can log in. The servers connect as that role, which has read-only access and does not bypass Row Level Security.
+4. Run the VS Code tasks **Run Agent Service**, then **Run Web App**, and open http://127.0.0.1:8005. Add `?debug=1` to the address to see each tool call the agent makes (useful for demos).
+5. Check http://127.0.0.1:8006/health. It lists each MCP server, the tool count and the prompt version.
+
+### One command to start and stop everything
+
+```bash
+bash scripts/run_agent.sh          # starts the agent (it starts the 3 tool servers) and the web app
+bash scripts/run_agent.sh stop     # stops them (Ctrl+C in the same terminal also works)
+bash scripts/run_agent.sh status   # shows whether they are running
+```
+
+It checks that the ports are free, that the access list and the access codes exist, and waits until the agent reports healthy. It does not print the access codes. They are in `src/python/web_app/temp_access_codes.json`.
+
+### Test it
+
+```bash
+(cd src/python/workshop && python test_answer_verifier.py && python test_agent_verification_loop.py && python test_access.py)
+python -m unittest tests.test_inventory_advisor            # tool tests against the live database
+RUN_AGENT_TESTS=1 python -m unittest tests.test_inventory_advisor   # also runs the agent (calls the model)
+python -m tests.evaluation                                  # 28 questions, writes docs/evaluation.md (about 7 minutes)
+```
+
+### Logs
+
+Every question, tool call, timing, token count and prompt version is appended to `logs/agent_calls.jsonl` (ignored by git). The log holds the questions users ask, so treat it as private.
+
+### Team testing: who sees what
+
+The agent can give each person their own view. A **super manager** sees all 8 stores. A **store manager** sees only one store, enforced by the database. Anyone not on the list gets nothing.
+
+1. Copy `src/python/workshop/access_list.example.json` to `access_list.json` and edit it. Each entry is a name with the role `super_manager`, or `store_manager` plus a `store`. The real file is ignored by git.
+2. Set `ACCESS_LIST_FILE` to the full path of that file before starting the agent service (for example `ACCESS_LIST_FILE=/workspace/src/python/workshop/access_list.json python agent_service.py`, or add it to `.env`).
+3. Make a temporary access code for each person: `cd src/python/web_app && python temp_access.py generate name1 name2`. Give each person only their own code. The names must match the access list. The web app will not start without a codes file.
+4. Run the agent service and the web app, expose port 8005 (VS Code Ports panel), and share the link plus the person's code. They sign in once, and a cookie lasts 8 hours.
+5. `/health` on the agent service shows how many people are on the list and how many identities are running. The call log records the person and identity on every call.
+
+Without `ACCESS_LIST_FILE` the service uses the single `RLS_USER_ID` from `.env`, as before.
+
+**Before deploying to Azure, remove the temporary access code:** delete `src/python/web_app/temp_access.py`, `test_temp_access.py` and `temp_access_codes.json`, and the two lines marked `TEMP ACCESS` in `web_app.py`. Keep the access list and the agent service changes: in Azure the signed-in user from the platform replaces the code, and the same list decides who sees what. The agent service must then be reachable only through the web app.
+
+### Known limits
+
+- Stock levels in the dataset are synthetic and are not tied to sales, so the size of the excess reflects how the data was generated.
+- Each person's identity comes from the access list (see below). Real sign-in is not built: locally a temporary access code stands in for it.
+- Conversations are held in memory and are lost when the service restarts.
+- Charts: ask for a bar chart, line chart or histogram. The agent draws it only from figures its data tools returned, and the image is served at `/charts/<name>` behind the login. Charts older than 24 hours are deleted.
+- Not yet answered well: how each store's seasonal pattern compares with the network's (no tool does that comparison).
+- There is no question limit unless `RATE_LIMIT_QUESTIONS` is set, the model client retries 3 times, and a tool call times out after 60 seconds. Tokens are logged but there is no cost figure.
+
 ## Contributions
 
 Contributions are welcome! If you have ideas for improvements, new features, or bug fixes, please open an issue or submit a pull request.

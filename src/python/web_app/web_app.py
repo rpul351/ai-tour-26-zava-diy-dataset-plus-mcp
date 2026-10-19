@@ -10,6 +10,7 @@ Web interface available at: http://127.0.0.1:8005
 
 import json
 import logging
+import re
 import sys
 from pathlib import Path
 from typing import AsyncGenerator, Dict, List
@@ -18,9 +19,11 @@ from typing import AsyncGenerator, Dict, List
 sys.path.append(str(Path(__file__).parent.parent / "workshop"))
 
 import httpx
-from fastapi import FastAPI, Form, HTTPException, UploadFile
+from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+
+from charts import CHART_DIR, valid_chart_name
 
 # Configure logging
 logging.basicConfig(level=logging.ERROR)
@@ -52,6 +55,7 @@ class WebApp:
         self.app.post("/upload")(self.upload_file)
         self.app.get("/chat/stream")(self.stream_chat)
         self.app.get("/files/{filename}")(self.serve_file)
+        self.app.get("/charts/{name}")(self.serve_chart)
         self.app.get("/health")(self.health_check)
     
     async def get_chat_page(self) -> HTMLResponse:
@@ -99,7 +103,7 @@ class WebApp:
         except Exception as e:
             return {"error": f"Error processing file: {e!s}"}
     
-    async def stream_chat(self, message: str = "") -> StreamingResponse:
+    async def stream_chat(self, request: Request, message: str = "", session_id: str = "") -> StreamingResponse:
         """Stream chat responses by proxying to the agent service."""
         if not message.strip():
             return StreamingResponse(
@@ -107,8 +111,9 @@ class WebApp:
                 media_type="text/event-stream",
             )
 
-        # Get or create session (simplified - using a single session)
-        session_id = "default"
+        # Each browser tab sends its own id so people do not share one conversation.
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", session_id):
+            session_id = "default"
         if session_id not in self.chat_sessions:
             self.chat_sessions[session_id] = []
 
@@ -116,7 +121,7 @@ class WebApp:
         self.chat_sessions[session_id].append({"role": "user", "content": message})
 
         return StreamingResponse(
-            self._generate_stream(message, session_id),
+            self._generate_stream(message, session_id, getattr(request.state, "zava_user", None)),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache", 
@@ -127,7 +132,7 @@ class WebApp:
             },
         )
     
-    async def _generate_stream(self, message: str, session_id: str) -> AsyncGenerator[str, None]:
+    async def _generate_stream(self, message: str, session_id: str, user: str | None = None) -> AsyncGenerator[str, None]:
         """Generate streaming response by proxying to agent service."""
         try:
             async with httpx.AsyncClient(timeout=120.0) as client:
@@ -141,7 +146,7 @@ class WebApp:
                     "POST",
                     f"{AGENT_SERVICE_URL}/chat/stream",
                     json=request_data,
-                    headers={"Accept": "text/event-stream"}
+                    headers={"Accept": "text/event-stream", **({"X-Zava-User": user} if user else {})}
                 ) as response:
                     if response.status_code != 200:
                         yield f"data: {json.dumps({'error': f'Agent service error: {response.status_code}'})}\n\n"
@@ -159,7 +164,9 @@ class WebApp:
                                         data = json.loads(data_str)
                                         
                                         # Convert agent service response format to web format
-                                        if data.get("content"):
+                                        if data.get("tool"):
+                                            yield f"data: {json.dumps({'tool': data['tool']})}\n\n"
+                                        elif data.get("content"):
                                             assistant_message += data["content"]
                                             yield f"data: {json.dumps({'content': data['content']})}\n\n"
                                         elif data.get("file_info"):
@@ -188,6 +195,13 @@ class WebApp:
         except Exception as e:
             yield f"data: {json.dumps({'error': f'Streaming error: {e!s}'})}\n\n"
     
+    async def serve_chart(self, name: str) -> FileResponse:
+        """Serve a chart the agent drew. Names are random, and only a fixed pattern is accepted."""
+        path = CHART_DIR / name
+        if not valid_chart_name(name) or not path.is_file():
+            raise HTTPException(status_code=404, detail="Chart not found")
+        return FileResponse(path, media_type="image/png", headers={"Cache-Control": "private, max-age=3600"})
+
     async def serve_file(self, filename: str) -> FileResponse:
         """Proxy file serving to agent service or serve locally."""
         try:
@@ -247,6 +261,9 @@ app = FastAPI(title="Azure AI Agent Web Interface")
 
 # Initialize web app
 web_app = WebApp(app)
+
+from temp_access import install_temp_access  # TEMP ACCESS: remove before deploying to Azure
+install_temp_access(app)  # TEMP ACCESS: remove before deploying to Azure
 
 
 if __name__ == "__main__":
