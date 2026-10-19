@@ -95,6 +95,18 @@ Give a category's seasonal pattern and how recent months compare with it.
 
 **Returns:** JSON with the seasonal index by month (1.0 is an average month), the peak month, months until the peak, `peak_is_near` (true when the peak is within 3 months), and recent actual versus expected units. The current month and future-dated orders are excluded. Nothing is reported with fewer than 2 complete calendar years. Lead times are not in the data.
 
+### `store_seasonal_alignment`
+
+Ranks stores from most to least aligned with the yearly sales pattern of all visible stores together (correlation of the 12 monthly indexes, average monthly gap, peak and quietest month). Optional `category_name`. A user who can see one store gets a message instead.
+
+### `stock_cover_ranking`
+
+Ranks products (`by="product"`) or store and product pairs (`by="store_product"`) by months of stock cover. `min_months_cover=60` means more than 5 years of stock. The summary gives the count over the threshold and its share.
+
+### `frequently_bought_together`
+
+Ranks pairs of products in the same order, with orders together, how many times more often than chance, and order counts by season. Optional `store_id`, `category_name`, `season`, `year`, `min_orders`, `top_n`. Pairs under 20 orders are flagged as too thin to trust.
+
 ### `year_over_year_summary`
 
 Compare one calendar year with another.

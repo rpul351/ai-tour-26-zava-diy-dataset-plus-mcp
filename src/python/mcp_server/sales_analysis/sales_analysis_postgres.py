@@ -1431,6 +1431,458 @@ class PostgreSQLSchemaProvider:
             "months_until_peak": (peak_month - today.month) % 12,
         }
 
+    async def store_seasonal_alignment(
+        self,
+        rls_user_id: str,
+        category_name: Optional[str] = None,
+    ) -> str:
+        """Rank stores by how closely their yearly sales shape follows the pattern of all visible stores together."""
+        conn = None
+        try:
+            conn = await self.get_connection()
+            await conn.execute("SELECT set_config('app.current_rls_user_id', $1, false)", rls_user_id)
+            scope = await self._describe_scope(conn, None)
+            category = None
+            if category_name:
+                category = await conn.fetchrow(
+                    "SELECT category_id, category_name FROM retail.categories WHERE UPPER(category_name) = UPPER($1::text)",
+                    category_name,
+                )
+                if category is None:
+                    valid = [r["category_name"] for r in await conn.fetch("SELECT category_name FROM retail.categories ORDER BY 1")]
+                    return json.dumps(
+                        {"results": [], "scope": scope, "message": "Unknown category.", "valid_categories": valid},
+                        indent=2,
+                        default=str,
+                    )
+            if scope["store_count"] < 2:
+                return json.dumps(
+                    {
+                        "results": [],
+                        "scope": scope,
+                        "message": "Only one store is visible to this user, so its pattern cannot be compared with the other stores. "
+                        "seasonal_baseline_check still gives this store's own pattern per category.",
+                    },
+                    indent=2,
+                    default=str,
+                )
+
+            rows = await conn.fetch(
+                """
+                SELECT oi.store_id, date_trunc('month', o.order_date)::date AS month_start,
+                       SUM(oi.quantity)::numeric AS units
+                FROM retail.order_items oi
+                JOIN retail.orders o ON o.order_id = oi.order_id
+                JOIN retail.products p ON p.product_id = oi.product_id
+                WHERE o.order_date < date_trunc('month', CURRENT_DATE)
+                  AND ($1::int IS NULL OR p.category_id = $1::int)
+                GROUP BY 1, 2
+                """,
+                category["category_id"] if category else None,
+            )
+            names = {r["store_id"]: r["store_name"] for r in await conn.fetch("SELECT store_id, store_name FROM retail.stores")}
+            today = await conn.fetchval("SELECT CURRENT_DATE")
+
+            monthly: Dict[int, Dict[date, float]] = {}
+            network: Dict[date, float] = {}
+            for r in rows:
+                monthly.setdefault(r["store_id"], {})[r["month_start"]] = float(r["units"])
+                network[r["month_start"]] = network.get(r["month_start"], 0.0) + float(r["units"])
+
+            def full_years(series: Dict[date, float]) -> List[int]:
+                counts: Dict[int, int] = {}
+                for m in series:
+                    counts[m.year] = counts.get(m.year, 0) + 1
+                return sorted(y for y, n in counts.items() if n == 12 and y < today.year)
+
+            def seasonal_index(series: Dict[date, float], years: List[int]) -> Optional[Dict[int, float]]:
+                avg = {y: sum(v for m, v in series.items() if m.year == y) / 12 for y in years}
+                if any(a <= 0 for a in avg.values()):
+                    return None
+                return {
+                    mo: sum(series[date(y, mo, 1)] / avg[y] for y in years) / len(years) for mo in range(1, 13)
+                }
+
+            years = full_years(network)
+            network_index = seasonal_index(network, years) if len(years) >= 2 else None
+            if network_index is None:
+                return json.dumps(
+                    {"results": [], "scope": scope, "message": "Fewer than 2 complete calendar years of history, so no seasonal pattern is reported."},
+                    indent=2,
+                    default=str,
+                )
+
+            import statistics
+
+            results = []
+            skipped = []
+            for store_id, series in monthly.items():
+                if any(date(y, mo, 1) not in series for y in years for mo in range(1, 13)):
+                    skipped.append(names.get(store_id, str(store_id)))
+                    continue
+                index = seasonal_index(series, years)
+                if index is None:
+                    skipped.append(names.get(store_id, str(store_id)))
+                    continue
+                try:
+                    corr = round(statistics.correlation([index[m] for m in range(1, 13)], [network_index[m] for m in range(1, 13)]), 3)
+                except statistics.StatisticsError:
+                    corr = None
+                gaps = {m: index[m] - network_index[m] for m in range(1, 13)}
+                biggest = max(gaps, key=lambda m: abs(gaps[m]))
+                units_in_years = sum(v for m, v in series.items() if m.year in years)
+                results.append(
+                    {
+                        "store_name": names.get(store_id, str(store_id)),
+                        "similarity_to_network_pattern": corr,
+                        "average_monthly_gap_from_network": round(sum(abs(g) for g in gaps.values()) / 12, 3),
+                        "store_peak_month": max(index, key=lambda m: index[m]),
+                        "store_quietest_month": min(index, key=lambda m: index[m]),
+                        "month_furthest_from_network": biggest,
+                        "units_in_years_used": round(units_in_years),
+                    }
+                )
+            results.sort(key=lambda r: (-(r["similarity_to_network_pattern"] if r["similarity_to_network_pattern"] is not None else -2), r["average_monthly_gap_from_network"]))
+            for rank, row in enumerate(results, 1):
+                row["rank_most_to_least_aligned"] = rank
+
+            return json.dumps(
+                {
+                    "category": category["category_name"] if category else "all categories together",
+                    "scope": scope,
+                    "as_of": today,
+                    "parameters": {"complete_years_used": years},
+                    "network_peak_month": max(network_index, key=lambda m: network_index[m]),
+                    "network_quietest_month": min(network_index, key=lambda m: network_index[m]),
+                    "stores_without_full_history": skipped,
+                    "row_count": len(results),
+                    "results": results,
+                    "notes": [
+                        "Each month's index is the month's units divided by that year's monthly average, averaged over the complete years used. 1.0 is an average month.",
+                        "similarity_to_network_pattern is the correlation of the store's 12 monthly indexes with the indexes of all stores in scope together (1.0 is identical shape). The network pattern includes the store itself.",
+                        "Small stores sell few units, so random swings can look like a different pattern. Treat low similarity at a small store as a reason to look closer, not as proof.",
+                        "Only complete calendar years and complete months are used; future-dated orders are excluded.",
+                    ],
+                },
+                indent=2,
+                default=str,
+            )
+        except Exception as e:
+            return json.dumps({"error": f"Store seasonal alignment failed: {e!s}", "results": [], "row_count": 0}, indent=2, default=str)
+        finally:
+            if conn:
+                await self.release_connection(conn)
+
+    async def stock_cover_ranking(
+        self,
+        rls_user_id: str,
+        store_id: Optional[int] = None,
+        category_name: Optional[str] = None,
+        by: str = "product",
+        min_months_cover: Optional[float] = None,
+        window_days: int = 365,
+        top_n: int = 20,
+    ) -> str:
+        """Rank products (or store and product pairs) by months of stock cover, widest gap between stock and sales first."""
+        conn = None
+        try:
+            if by not in ("product", "store_product"):
+                return json.dumps({"error": "by must be 'product' or 'store_product'.", "results": []}, indent=2)
+            conn = await self.get_connection()
+            await conn.execute("SELECT set_config('app.current_rls_user_id', $1, false)", rls_user_id)
+            scope = await self._describe_scope(conn, store_id)
+            if category_name:
+                found = await conn.fetchval(
+                    "SELECT 1 FROM retail.categories WHERE UPPER(category_name) = UPPER($1::text)", category_name
+                )
+                if not found:
+                    valid = [r["category_name"] for r in await conn.fetch("SELECT category_name FROM retail.categories ORDER BY 1")]
+                    return json.dumps(
+                        {"results": [], "scope": scope, "message": "Unknown category.", "valid_categories": valid},
+                        indent=2,
+                        default=str,
+                    )
+            per_store = by == "store_product"
+            # Stock and sales are aggregated separately before joining, so stock is never repeated per order line.
+            sql = f"""
+                WITH sales AS (
+                    SELECT {"oi.store_id," if per_store else ""} oi.product_id, SUM(oi.quantity)::numeric AS sold_units
+                    FROM retail.order_items oi
+                    JOIN retail.orders o ON o.order_id = oi.order_id
+                    WHERE o.order_date > CURRENT_DATE - $1::int
+                      AND o.order_date <= CURRENT_DATE
+                      AND ($2::int IS NULL OR oi.store_id = $2)
+                    GROUP BY {"oi.store_id," if per_store else ""} oi.product_id
+                ),
+                stock AS (
+                    SELECT {"i.store_id," if per_store else ""} i.product_id, SUM(i.stock_level)::numeric AS stock_units
+                    FROM retail.inventory i
+                    WHERE ($2::int IS NULL OR i.store_id = $2)
+                    GROUP BY {"i.store_id," if per_store else ""} i.product_id
+                ),
+                metrics AS (
+                    SELECT {"st.store_id, s.store_name," if per_store else ""}
+                           p.product_name, c.category_name, st.stock_units,
+                           ROUND(st.stock_units * p.cost, 2) AS stock_value,
+                           COALESCE(sa.sold_units, 0) AS units_sold_in_window,
+                           ROUND(COALESCE(sa.sold_units, 0) / ($1::numeric / 30.4375), 1) AS units_sold_per_month,
+                           CASE WHEN COALESCE(sa.sold_units, 0) > 0
+                                THEN ROUND(st.stock_units / (sa.sold_units / ($1::numeric / 30.4375)), 1) END AS months_of_cover
+                    FROM stock st
+                    JOIN retail.products p ON p.product_id = st.product_id
+                    JOIN retail.categories c ON c.category_id = p.category_id
+                    {"JOIN retail.stores s ON s.store_id = st.store_id" if per_store else ""}
+                    LEFT JOIN sales sa ON sa.product_id = st.product_id {"AND sa.store_id = st.store_id" if per_store else ""}
+                    WHERE ($3::text IS NULL OR UPPER(c.category_name) = UPPER($3::text))
+                ),
+                summary AS (
+                    SELECT COUNT(*) AS rows_in_scope,
+                           COUNT(*) FILTER (WHERE months_of_cover IS NULL) AS rows_with_no_sales,
+                           COUNT(*) FILTER (WHERE months_of_cover > $4::numeric) AS rows_over_threshold,
+                           SUM(stock_units) AS total_stock_units,
+                           SUM(units_sold_in_window) AS total_units_sold_in_window
+                    FROM metrics
+                )
+                SELECT m.*, s.rows_in_scope, s.rows_with_no_sales, s.rows_over_threshold,
+                       s.total_stock_units, s.total_units_sold_in_window
+                FROM metrics m CROSS JOIN summary s
+                WHERE m.months_of_cover IS NOT NULL AND m.months_of_cover > $4::numeric
+                ORDER BY m.months_of_cover DESC, m.product_name
+                LIMIT $5::int
+            """
+            threshold = 0 if min_months_cover is None else min_months_cover
+            rows = await conn.fetch(sql, window_days, store_id, category_name, threshold, top_n)
+            parameters = {
+                "store_id": store_id,
+                "category_name": category_name,
+                "by": by,
+                "min_months_cover": min_months_cover,
+                "window_days": window_days,
+                "window_end": await conn.fetchval("SELECT CURRENT_DATE"),
+                "top_n": top_n,
+            }
+            if not rows:
+                counts = await conn.fetchrow(
+                    "SELECT COUNT(*) AS stock_rows FROM retail.inventory WHERE ($1::int IS NULL OR store_id = $1)", store_id
+                )
+                return json.dumps(
+                    {
+                        "results": [],
+                        "row_count": 0,
+                        "scope": scope,
+                        "parameters": parameters,
+                        "message": "No rows have stock cover above this threshold in this scope."
+                        if counts["stock_rows"]
+                        else "No inventory rows found for this scope.",
+                    },
+                    indent=2,
+                    default=str,
+                )
+            first = dict(rows[0])
+            summary = {
+                "rows_in_scope": first["rows_in_scope"],
+                "rows_over_threshold": first["rows_over_threshold"],
+                "share_over_threshold_pct": round(100 * first["rows_over_threshold"] / first["rows_in_scope"], 1)
+                if first["rows_in_scope"]
+                else None,
+                "rows_with_no_sales_in_window": first["rows_with_no_sales"],
+                "total_stock_units": first["total_stock_units"],
+                "total_units_sold_in_window": first["total_units_sold_in_window"],
+                "rows_are": "store and product pairs" if per_store else "products (stock summed over the stores in scope)",
+            }
+            drop = ("rows_in_scope", "rows_with_no_sales", "rows_over_threshold", "total_stock_units", "total_units_sold_in_window")
+            results = [{k: v for k, v in dict(r).items() if k not in drop} for r in rows]
+            return json.dumps(
+                {
+                    "scope": scope,
+                    "parameters": parameters,
+                    "summary": summary,
+                    "row_count": len(results),
+                    "results": results,
+                    "notes": [
+                        "months_of_cover is stock divided by average monthly units sold in the window. 60 months is 5 years. Rows with no sales in the window have no cover figure and are counted in the summary, not ranked.",
+                        "Stock levels are a snapshot and are not tied to sales history, so a very large cover may mean stock and sales are counted in different units. Check with the inventory owner before acting.",
+                    ],
+                },
+                indent=2,
+                default=str,
+            )
+        except Exception as e:
+            return json.dumps({"error": f"Stock cover ranking failed: {e!s}", "results": [], "row_count": 0}, indent=2, default=str)
+        finally:
+            if conn:
+                await self.release_connection(conn)
+
+    async def frequently_bought_together(
+        self,
+        rls_user_id: str,
+        store_id: Optional[int] = None,
+        category_name: Optional[str] = None,
+        season: Optional[str] = None,
+        year: Optional[int] = None,
+        min_orders: int = 3,
+        top_n: int = 10,
+    ) -> str:
+        """Rank pairs of products that appear in the same order, with how much more often than chance."""
+        seasons = {"winter": [12, 1, 2], "spring": [3, 4, 5], "summer": [6, 7, 8], "autumn": [9, 10, 11]}
+        conn = None
+        try:
+            if season is not None and season.lower() not in seasons:
+                return json.dumps({"error": "season must be winter, spring, summer or autumn.", "results": []}, indent=2)
+            months = seasons[season.lower()] if season else None
+            conn = await self.get_connection()
+            await conn.execute("SELECT set_config('app.current_rls_user_id', $1, false)", rls_user_id)
+            scope = await self._describe_scope(conn, store_id)
+            if category_name:
+                found = await conn.fetchval(
+                    "SELECT 1 FROM retail.categories WHERE UPPER(category_name) = UPPER($1::text)", category_name
+                )
+                if not found:
+                    valid = [r["category_name"] for r in await conn.fetch("SELECT category_name FROM retail.categories ORDER BY 1")]
+                    return json.dumps(
+                        {"results": [], "scope": scope, "message": "Unknown category.", "valid_categories": valid},
+                        indent=2,
+                        default=str,
+                    )
+
+            # Filters are added only when given. A catch-all "$1 IS NULL OR ..." makes the planner choose a plan
+            # that takes over 30 seconds for the largest stores. Values are still bound parameters.
+            args: List[Any] = []
+
+            def bind(value: Any) -> str:
+                args.append(value)
+                return f"${len(args)}"
+
+            conditions = ["o.order_date <= CURRENT_DATE"]
+            if store_id is not None:
+                conditions.append(f"o.store_id = {bind(store_id)}::int")
+            if months:
+                conditions.append(f"EXTRACT(MONTH FROM o.order_date)::int = ANY({bind(months)}::int[])")
+            if year is not None:
+                conditions.append(f"EXTRACT(YEAR FROM o.order_date)::int = {bind(year)}::int")
+            category_join = ""
+            if category_name:
+                category_join = (
+                    "JOIN retail.products p ON p.product_id = oi.product_id "
+                    "JOIN retail.categories c ON c.category_id = p.category_id"
+                )
+                conditions.append(f"UPPER(c.category_name) = UPPER({bind(category_name)}::text)")
+            min_param, top_param = bind(min_orders), bind(top_n)
+            sql = f"""
+                WITH items AS MATERIALIZED (
+                    SELECT DISTINCT oi.order_id, oi.product_id
+                    FROM retail.order_items oi
+                    JOIN retail.orders o ON o.order_id = oi.order_id
+                    {category_join}
+                    WHERE {" AND ".join(conditions)}
+                ),
+                n AS (SELECT COUNT(DISTINCT order_id) AS orders FROM items),
+                per_product AS (SELECT product_id, COUNT(*) AS orders FROM items GROUP BY product_id),
+                pairs AS (
+                    SELECT a.product_id AS a, b.product_id AS b, COUNT(*) AS together
+                    FROM items a JOIN items b ON a.order_id = b.order_id AND a.product_id < b.product_id
+                    GROUP BY 1, 2
+                    HAVING COUNT(*) >= {min_param}::int
+                    ORDER BY together DESC, 1, 2
+                    LIMIT {top_param}::int
+                )
+                SELECT pa.name_a, pa.name_b, pr.together AS orders_together,
+                       pa.orders_a, pa.orders_b, n.orders AS orders_in_scope,
+                       ROUND((pr.together::numeric * n.orders) / NULLIF(pa.orders_a::numeric * pa.orders_b, 0), 1) AS times_more_than_chance,
+                       pr.a AS product_a_id, pr.b AS product_b_id
+                FROM pairs pr
+                CROSS JOIN n
+                CROSS JOIN LATERAL (
+                    SELECT (SELECT product_name FROM retail.products WHERE product_id = pr.a) AS name_a,
+                           (SELECT product_name FROM retail.products WHERE product_id = pr.b) AS name_b,
+                           (SELECT orders FROM per_product WHERE product_id = pr.a) AS orders_a,
+                           (SELECT orders FROM per_product WHERE product_id = pr.b) AS orders_b
+                ) pa
+                ORDER BY pr.together DESC, pa.name_a, pa.name_b
+            """
+            rows = await conn.fetch(sql, *args)
+            parameters = {
+                "store_id": store_id,
+                "category_name": category_name,
+                "season": season.lower() if season else None,
+                "year": year,
+                "min_orders": min_orders,
+                "top_n": top_n,
+                "window_end": await conn.fetchval("SELECT CURRENT_DATE"),
+            }
+            if not rows:
+                return json.dumps(
+                    {
+                        "results": [],
+                        "row_count": 0,
+                        "scope": scope,
+                        "parameters": parameters,
+                        "message": "No product pairs reach the minimum number of orders in this scope.",
+                    },
+                    indent=2,
+                    default=str,
+                )
+
+            pair_ids = [[r["product_a_id"], r["product_b_id"]] for r in rows]
+            season_args: List[Any] = [[p[0] for p in pair_ids], [p[1] for p in pair_ids]]
+            season_conditions = ["o.order_date <= CURRENT_DATE"]
+            if store_id is not None:
+                season_args.append(store_id)
+                season_conditions.append(f"o.store_id = ${len(season_args)}::int")
+            if year is not None:
+                season_args.append(year)
+                season_conditions.append(f"EXTRACT(YEAR FROM o.order_date)::int = ${len(season_args)}::int")
+            by_season_rows = await conn.fetch(
+                f"""
+                WITH wanted AS (SELECT * FROM unnest($1::int[], $2::int[]) AS w(a, b)),
+                orders_in_scope AS (
+                    SELECT o.order_id, EXTRACT(MONTH FROM o.order_date)::int AS m
+                    FROM retail.orders o
+                    WHERE {" AND ".join(season_conditions)}
+                )
+                SELECT w.a, w.b,
+                       COUNT(DISTINCT s.order_id) FILTER (WHERE s.m IN (12, 1, 2)) AS winter,
+                       COUNT(DISTINCT s.order_id) FILTER (WHERE s.m IN (3, 4, 5)) AS spring,
+                       COUNT(DISTINCT s.order_id) FILTER (WHERE s.m IN (6, 7, 8)) AS summer,
+                       COUNT(DISTINCT s.order_id) FILTER (WHERE s.m IN (9, 10, 11)) AS autumn
+                FROM wanted w
+                JOIN retail.order_items x ON x.product_id = w.a
+                JOIN retail.order_items y ON y.order_id = x.order_id AND y.product_id = w.b
+                JOIN orders_in_scope s ON s.order_id = x.order_id
+                GROUP BY w.a, w.b
+                """,
+                *season_args,
+            )
+            seasonal = {(r["a"], r["b"]): {k: r[k] for k in ("winter", "spring", "summer", "autumn")} for r in by_season_rows}
+            results = []
+            for r in rows:
+                d = dict(r)
+                d["orders_together_by_season"] = seasonal.get((d["product_a_id"], d["product_b_id"]))
+                d["enough_orders_to_trust"] = d["orders_together"] >= 20
+                del d["product_a_id"], d["product_b_id"]
+                results.append(d)
+            return json.dumps(
+                {
+                    "scope": scope,
+                    "parameters": parameters,
+                    "row_count": len(results),
+                    "results": results,
+                    "notes": [
+                        "orders_together counts orders that contain both products. times_more_than_chance compares that with how often the pair would appear together if the two products were bought independently; 1 means no link.",
+                        "orders_together_by_season counts the same pairs by season of the order date (winter is December to February), whatever the season filter, so seasons can be compared.",
+                        "A pair with fewer than 20 orders together (enough_orders_to_trust false) is too thin to build a bundle or a store-specific plan on.",
+                        "Pairs are counted over all dates up to today unless a year or season is given.",
+                    ],
+                },
+                indent=2,
+                default=str,
+            )
+        except Exception as e:
+            return json.dumps({"error": f"Frequently bought together failed: {e!s}", "results": [], "row_count": 0}, indent=2, default=str)
+        finally:
+            if conn:
+                await self.release_connection(conn)
+
     @staticmethod
     def _movers(rows: List[Dict[str, Any]], label_key: str) -> Dict[str, Any]:
         """Largest unit decline and gain, by amount and by percentage, so small and large movers both show."""

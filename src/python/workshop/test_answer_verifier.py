@@ -123,6 +123,19 @@ def test_numbers_are_matched_to_the_evidence_at_their_own_precision():
     assert missing_from_evidence([4430801, 12.4, 5555], evidence) == [4430801, 12.4, 5555]
 
 
+def test_a_calculation_line_with_a_label_is_checked_on_its_arithmetic():
+    evidence = ["max 1.561 min 0.608"]
+    assert verify_answer("Scope: all\nMy calculation: GARDEN swing = 1.561 - 0.608 = 0.953", evidence).problems == []
+    assert verify_answer("Scope: all\nMy calculation: GARDEN swing = 1.561 - 0.608 = 0.900", evidence).problems
+
+
+def test_words_around_the_numbers_of_a_calculation_do_not_break_the_check():
+    ev = ["units_over_equal_cover: -26649, units_over_equal_cover: 6035"]
+    line = "Scope: all\nMy calculation: Seattle units_over_equal_cover (-26,649) + Kirkland units_over_equal_cover (6,035) = -20,614"
+    assert verify_answer(line, ev).problems == []
+    assert verify_answer(line.replace("-20,614", "-20,000"), ev).problems
+
+
 if __name__ == "__main__":
     tests = [fn for name, fn in sorted(globals().items()) if name.startswith("test_")]
     for fn in tests:

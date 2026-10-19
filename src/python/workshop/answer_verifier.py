@@ -106,6 +106,8 @@ def _check_calculation(line: str, values: list[float], result: Verification) -> 
     """Check a 'My calculation: <inputs> = <result>' line: inputs traced, arithmetic correct."""
     body = re.sub(r"^\W*my calculation[\s:]*", "", line.strip(), flags=re.IGNORECASE)
     inputs, stated = body.rsplit("=", 1)
+    if "=" in inputs:  # "label = 1.5 - 0.5 = 1.0": check the arithmetic after the label
+        inputs = inputs.rsplit("=", 1)[1]
     for text, value, tolerance in _checkable_figures(inputs):
         label = text.strip()
         as_percentage = value < 1 and _present(values, value * 100, tolerance * 100)  # 0.4 for "40 percent"
@@ -113,6 +115,10 @@ def _check_calculation(line: str, values: list[float], result: Verification) -> 
             result.unverified.append(label)
 
     expression = _arithmetic(inputs)
+    if expression and not re.fullmatch(r"[\d\s.+\-*/()]+", expression):
+        unlabelled = re.sub(r"[A-Za-z_][A-Za-z_0-9&']*", " ", expression).strip()  # "Seattle units (5) + Kirkland units (6)"
+        if re.fullmatch(r"[\d\s.+\-*/()]+", unlabelled) and re.search(r"[+\-*/]", unlabelled):
+            expression = unlabelled
     if not expression or not re.fullmatch(r"[\d\s.+\-*/()]+", expression):
         result.issues.append(f"Calculation is not plain arithmetic on numbers: {line.strip()}")
         return
@@ -131,7 +137,10 @@ def _check_calculation(line: str, values: list[float], result: Verification) -> 
     decimals = len(digits.split(".")[1]) if "." in digits else 0
     claimed, tolerance = float(digits) * scale, 0.5 * 10 ** (-decimals) * scale
     if abs(abs(computed) - claimed) > tolerance + 1e-9:
-        result.issues.append(f"Calculation does not check out (it works out to {abs(computed):,.2f}): {line.strip()}")
+        result.issues.append(
+            f"Calculation does not check out (it works out to {abs(computed):,.2f}; "
+            f"state that result rounded to the same decimals you gave, or fewer): {line.strip()}"
+        )
         return
     insort(values, claimed)  # a confirmed result may be used by later lines
 

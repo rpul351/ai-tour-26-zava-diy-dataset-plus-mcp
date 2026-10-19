@@ -68,6 +68,53 @@ def test_the_chart_line_does_not_trip_the_answer_check():
     assert verify_answer(answer, EVIDENCE + ["question"]).problems == []
 
 
+def test_a_closing_question_or_offer_after_using_tools_is_caught():
+    assert agent_service.closing_question("Scope: x\n\nBody.\n\nWhich should I do next?", True)
+    assert agent_service.closing_question("Body.\n\nDraft next steps (pick one and I'll run it):\n- a\n- b", True)
+    assert agent_service.closing_question("Body.\n\nIf you want, I can also draw a chart.", True)
+
+
+def test_a_plain_recommendation_or_a_no_tool_redirect_is_not_caught():
+    assert not agent_service.closing_question("Body.\n\nRecommendation: hold orders for these three products.", True)
+    assert not agent_service.closing_question("That is outside what I do. Would you like an inventory question?", False)
+
+
+def test_a_short_closing_offer_is_dropped_but_figures_in_it_are_kept():
+    drop = agent_service.without_closing_offer("Scope: x\n\nSeattle sold 10 units.\n\nWould you like a chart?", True)
+    assert drop == "Scope: x\n\nSeattle sold 10 units."
+    options = agent_service.without_closing_offer("Body.\n\nDraft next steps (pick one and I'll run it):\n- a\n- b", True)
+    assert options == "Body."
+    figures = "Body.\n\nIf you want, order 500 units for 2000 dollars."
+    assert agent_service.without_closing_offer(figures, True) == figures
+    offer = "Body 424 rows.\n\nIf you want an export of all 424 products I can produce a CSV; say export all."
+    assert agent_service.without_closing_offer(offer, True) == "Body 424 rows."
+    assert agent_service.without_closing_offer("Would you like help?", True) == "Would you like help?"
+
+
+def test_a_download_link_next_to_a_closing_offer_is_kept():
+    answer = "Scope: x\n\nSummary.\n\n[Download list (CSV, 40 rows)](/exports/e0123456789abcdef012.csv)\nIf you want all 424 rows, I can export them."
+    out = agent_service.without_closing_offer(answer, True)
+    assert "](/exports/e0123456789abcdef012.csv)" in out and "If you want" not in out
+    listed = "Body.\n\n1. Hold orders.\n2. Check seasonal peak.\n3. If you want, I can export the 424 products to CSV."
+    assert agent_service.without_closing_offer(listed, True).endswith("2. Check seasonal peak.")
+
+
+def test_a_store_user_asking_about_another_store_must_be_told_it_is_not_visible():
+    from access import STORE_RLS_IDS
+
+    kirkland = STORE_RLS_IDS["Zava Retail Kirkland"]
+    ask = "How many units did the Seattle store sell in 2023?"
+    assert agent_service.scope_problem(ask, kirkland, "Scope: Kirkland\nKirkland sold 1,171 units.")
+    assert not agent_service.scope_problem(ask, kirkland, "I cannot see Seattle; I can see only Kirkland. Kirkland sold 1,171 units.")
+    assert not agent_service.scope_problem("How is Kirkland doing?", kirkland, "Kirkland sold 1,171 units.")
+    assert not agent_service.scope_problem(ask, agent_service.GLOBAL_RLS_ID, "Seattle sold 5 units.")
+
+
+def test_a_closing_i_can_bullet_with_figures_is_dropped():
+    answer = "Body 424 rows.\n\nIf you want:\n- I can list the next 10 products (rows 11-20) or export the full 424-row list to CSV."
+    assert agent_service.without_closing_offer(answer, True) == "Body 424 rows."
+
+
 if __name__ == "__main__":
     tests = [fn for name, fn in sorted(globals().items()) if name.startswith("test_")]
     for fn in tests:

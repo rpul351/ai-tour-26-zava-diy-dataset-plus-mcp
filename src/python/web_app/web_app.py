@@ -24,6 +24,7 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from charts import CHART_DIR, valid_chart_name
+from exports import EXPORT_DIR, media_type, valid_export_name
 
 # Configure logging
 logging.basicConfig(level=logging.ERROR)
@@ -56,6 +57,7 @@ class WebApp:
         self.app.get("/chat/stream")(self.stream_chat)
         self.app.get("/files/{filename}")(self.serve_file)
         self.app.get("/charts/{name}")(self.serve_chart)
+        self.app.get("/exports/{name}")(self.serve_export)
         self.app.get("/health")(self.health_check)
     
     async def get_chat_page(self) -> HTMLResponse:
@@ -201,6 +203,18 @@ class WebApp:
         if not valid_chart_name(name) or not path.is_file():
             raise HTTPException(status_code=404, detail="Chart not found")
         return FileResponse(path, media_type="image/png", headers={"Cache-Control": "private, max-age=3600"})
+
+    async def serve_export(self, name: str) -> FileResponse:
+        """Serve a CSV or PDF the agent wrote, as a download. Names are random, and only a fixed pattern is accepted."""
+        path = EXPORT_DIR / name
+        if not valid_export_name(name) or not path.is_file():
+            raise HTTPException(status_code=404, detail="File not found")
+        return FileResponse(
+            path,
+            media_type=media_type(name),
+            filename=f"zava_{name}",
+            headers={"Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff"},
+        )
 
     async def serve_file(self, filename: str) -> FileResponse:
         """Proxy file serving to agent service or serve locally."""
