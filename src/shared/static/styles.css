@@ -270,3 +270,5 @@ body {
 .assistant a:hover {
     text-decoration: underline;
 }
+
+.assistant img { max-width: 100%; height: auto; border-radius: 6px; margin: 8px 0; }

@@ -58,6 +58,19 @@ def _present(values: list[float], target: float, tolerance: float) -> bool:
     return index < len(values) and values[index] <= target + tolerance + 1e-9
 
 
+def missing_from_evidence(numbers: list[float], evidence: list[str]) -> list[float]:
+    """Numbers that do not appear in the evidence, allowing for the precision they were written with."""
+    from decimal import Decimal
+
+    values = _evidence_values(evidence)
+    missing = []
+    for number in numbers:
+        decimals = max(0, -Decimal(str(number)).as_tuple().exponent)
+        if not _present(values, abs(float(number)), 0.5 * 10 ** (-decimals)):
+            missing.append(number)
+    return missing
+
+
 def _evaluate(expression: str) -> float:
     """Evaluate plain arithmetic (numbers, + - * / and brackets) without using eval."""
 

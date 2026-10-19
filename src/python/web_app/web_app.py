@@ -23,6 +23,8 @@ from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from charts import CHART_DIR, valid_chart_name
+
 # Configure logging
 logging.basicConfig(level=logging.ERROR)
 
@@ -53,6 +55,7 @@ class WebApp:
         self.app.post("/upload")(self.upload_file)
         self.app.get("/chat/stream")(self.stream_chat)
         self.app.get("/files/{filename}")(self.serve_file)
+        self.app.get("/charts/{name}")(self.serve_chart)
         self.app.get("/health")(self.health_check)
     
     async def get_chat_page(self) -> HTMLResponse:
@@ -192,6 +195,13 @@ class WebApp:
         except Exception as e:
             yield f"data: {json.dumps({'error': f'Streaming error: {e!s}'})}\n\n"
     
+    async def serve_chart(self, name: str) -> FileResponse:
+        """Serve a chart the agent drew. Names are random, and only a fixed pattern is accepted."""
+        path = CHART_DIR / name
+        if not valid_chart_name(name) or not path.is_file():
+            raise HTTPException(status_code=404, detail="Chart not found")
+        return FileResponse(path, media_type="image/png", headers={"Cache-Control": "private, max-age=3600"})
+
     async def serve_file(self, filename: str) -> FileResponse:
         """Proxy file serving to agent service or serve locally."""
         try:

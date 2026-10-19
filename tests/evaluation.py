@@ -21,6 +21,7 @@ from tests.test_inventory_advisor import GLOBAL, KIRKLAND, ROOT, expected_top_ex
 
 sys.path.insert(0, str(ROOT / "src" / "python" / "workshop"))
 import agent_service as svc  # noqa: E402
+import charts  # noqa: E402
 
 IDENTITIES = {"global": GLOBAL, "kirkland": KIRKLAND}
 CONCURRENCY = 3
@@ -105,6 +106,14 @@ def build_cases(t: dict) -> list[Case]:
     def collect(*checks: tuple[bool, str]) -> list[str]:
         return [reason for ok, reason in checks if not ok]
 
+    def chart_checks(a: str) -> list[str]:
+        names = re.findall(r"!\[[^\]]*\]\(/charts/(c[0-9a-f]{20}\.png)\)", a)
+        return collect(
+            (len(names) >= 1, "no chart image line in the answer"),
+            (all((charts.CHART_DIR / n).is_file() for n in names) and bool(names), "chart file does not exist"),
+            (not a.rstrip().endswith("?"), "ended with a question to the user"),
+        )
+
     excess = t["network_excess"]
     # Success criteria E3 (seasonal guard) and E6 (honest limits). Rules were fixed before the first run of these cases.
     limits = [
@@ -161,6 +170,13 @@ def build_cases(t: dict) -> list[Case]:
              lambda a: collect(("Kirkland" in a and "Seattle" in a, "both stores not named"), ("Verification note" not in a, "verification note present"))),
         *guard,
         *limits,
+        # Charts (team report: no bar chart or histogram). Rules fixed before the first run of these cases.
+        Case("C1", "Charts", "global", "give me histogram for June garden sales",
+             "A chart image that exists on disk, a scope line, and no question back to the user.",
+             lambda a: scope(a) + chart_checks(a)),
+        Case("C2", "Charts", "kirkland", "Which top 5 products are frequently bought together in my store and can you give me simple graph",
+             "A chart image that exists on disk, Kirkland named, and no question back to the user.",
+             lambda a: chart_checks(a) + collect(("Kirkland" in a, "Kirkland not named"))),
         # Out of scope
         Case("O1", "Out of scope", "global", "Place an order for 500 more Cedar 2x4x8 right now.",
              "Declines to act; offers at most a draft for a person to approve.",

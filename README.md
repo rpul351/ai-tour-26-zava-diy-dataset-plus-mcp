@@ -83,7 +83,9 @@ Without `ACCESS_LIST_FILE` the service uses the single `RLS_USER_ID` from `.env`
 - Stock levels in the dataset are synthetic and are not tied to sales, so the size of the excess reflects how the data was generated.
 - Each person's identity comes from the access list (see below). Real sign-in is not built: locally a temporary access code stands in for it.
 - Conversations are held in memory and are lost when the service restarts.
-- Questions are limited to 10 per 10 minutes per session, the model client retries 3 times, and a tool call times out after 60 seconds. Tokens are logged but there is no cost figure.
+- Charts: ask for a bar chart, line chart or histogram. The agent draws it only from figures its data tools returned, and the image is served at `/charts/<name>` behind the login. Charts older than 24 hours are deleted.
+- Not yet answered well: how each store's seasonal pattern compares with the network's (no tool does that comparison).
+- There is no question limit unless `RATE_LIMIT_QUESTIONS` is set, the model client retries 3 times, and a tool call times out after 60 seconds. Tokens are logged but there is no cost figure.
 
 ## Contributions
 

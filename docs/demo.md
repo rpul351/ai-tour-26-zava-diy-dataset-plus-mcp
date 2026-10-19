@@ -11,7 +11,7 @@ About 8 minutes. Rehearse it out loud, twice, with a timer. This script has not 
 5. `.env` has `RLS_USER_ID` set to the all-zeros ID for the main demo. For the access demo, restart the agent service with a store ID (for example Kirkland, `9c8b7a65-4321-fed0-9876-543210fedcba`).
 6. Ask one throwaway question first so the first real answer is not slow.
 
-Each session may ask 10 questions in 10 minutes. Open a new tab to start a fresh session.
+There is no question limit unless `RATE_LIMIT_QUESTIONS` is set.
 
 ## Script
 
@@ -45,7 +45,7 @@ From the latest evaluation (`docs/evaluation.md`), one run on 2026-10-13:
 ## If something fails during the demo
 
 - Slow answer: wait. Do not retype the question.
-- "Too many questions" message: open a new tab.
+- "Too many questions" message: only appears if `RATE_LIMIT_QUESTIONS` was set; unset it and restart.
 - Content-policy message: rephrase as an inventory question.
 - `/health` is not `healthy`: restart the agent service task.
 - No network or service: use the fallback below.

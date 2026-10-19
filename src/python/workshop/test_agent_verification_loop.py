@@ -1,6 +1,7 @@
 """Tests for the verify-then-revise loop in run_turn. Run with: python test_agent_verification_loop.py"""
 
 import asyncio
+import contextlib
 import os
 import tempfile
 from types import SimpleNamespace
@@ -124,11 +125,28 @@ def test_a_slow_tool_times_out_and_the_model_is_told():
     assert items[-1] == {"done": True}
 
 
+@contextlib.contextmanager
+def limit_of(n):
+    saved, agent_service.RATE_LIMIT_QUESTIONS = agent_service.RATE_LIMIT_QUESTIONS, n
+    try:
+        yield
+    finally:
+        agent_service.RATE_LIMIT_QUESTIONS = saved
+
+
+def test_the_question_limit_is_off_unless_it_is_set():
+    saved, agent_service.RATE_LIMIT_QUESTIONS = agent_service.RATE_LIMIT_QUESTIONS, 0
+    try:
+        assert all(agent_service.rate_limit_wait("unlimited") == 0 for _ in range(100))
+    finally:
+        agent_service.RATE_LIMIT_QUESTIONS = saved
+
+
 def test_a_session_that_asks_too_often_is_told_to_wait():
-    limit = agent_service.RATE_LIMIT_QUESTIONS
-    assert [agent_service.rate_limit_wait("busy") for _ in range(limit)] == [0] * limit
-    assert 0 < agent_service.rate_limit_wait("busy") <= agent_service.RATE_LIMIT_WINDOW_SECONDS + 1
-    assert agent_service.rate_limit_wait("someone else") == 0
+    with limit_of(10):
+        assert [agent_service.rate_limit_wait("busy") for _ in range(10)] == [0] * 10
+        assert 0 < agent_service.rate_limit_wait("busy") <= agent_service.RATE_LIMIT_WINDOW_SECONDS + 1
+        assert agent_service.rate_limit_wait("someone else") == 0
 
 
 import contextlib  # noqa: E402
@@ -186,8 +204,8 @@ def test_someone_not_on_the_list_is_refused_before_any_tool_runs():
 
 def test_the_limit_belongs_to_the_person_not_the_session():
     acl = AccessList({"alice-c": GLOBAL_RLS_ID, "bob-c": GLOBAL_RLS_ID})
-    with chat_endpoint(acl) as (ask, calls):
-        for i in range(agent_service.RATE_LIMIT_QUESTIONS):
+    with limit_of(10), chat_endpoint(acl) as (ask, calls):
+        for i in range(10):
             assert "error" not in ask("alice-c", session=f"new-tab-{i}")[0]
         assert "Too many questions" in ask("alice-c", session="yet-another-tab")[0]["error"]
         assert "error" not in ask("bob-c")[0]

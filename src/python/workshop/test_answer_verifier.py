@@ -1,6 +1,6 @@
 """Tests for answer_verifier. Run with: python test_answer_verifier.py (or pytest)."""
 
-from answer_verifier import verify_answer
+from answer_verifier import missing_from_evidence, verify_answer
 
 YEAR_RESULT = '{"scope": {"covers_all_stores": true}, "totals": {"units": 90308, "units_compare": 95034, ' \
     '"units_change_pct": -5.0, "revenue": 6157517.72, "revenue_change_pct": -5.7}}'
@@ -115,6 +115,12 @@ def test_calculation_may_start_with_a_negative_number():
     evidence = ['{"scope": 1, "gap": -25973, "surplus": 6027}']
     answer = "Scope: x\n- My calculation: -25973 + 6027 = -19946 (still below)"
     assert verify_answer(answer, evidence).problems == []
+
+
+def test_numbers_are_matched_to_the_evidence_at_their_own_precision():
+    evidence = ['{"excess_value": 4430800.00, "pct": 12.3, "units": 9469}']
+    assert missing_from_evidence([4430800, 12.3, 9469, 9469.0, -9469], evidence) == []
+    assert missing_from_evidence([4430801, 12.4, 5555], evidence) == [4430801, 12.4, 5555]
 
 
 if __name__ == "__main__":
