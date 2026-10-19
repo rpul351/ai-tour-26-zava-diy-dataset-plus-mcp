@@ -28,6 +28,19 @@ Browser -> web app (:8005) -> agent service (:8006) -> 3 MCP servers (stdio) -> 
 
 Every answer is checked in code before it is sent. Figures must match a tool result, calculations are recomputed, and a network total can only be claimed when the user can see every store.
 
+### Quick start for a teammate
+
+1. Open the repo in the dev container (it brings Python 3.13 and the database).
+2. `pip install -r src/python/requirements.txt`
+3. `az login --use-device-code`. Your Azure account needs permission to call the Azure OpenAI resource; ask the project owner to grant it.
+4. `cp .env.example .env` and fill in the values listed under "Run it" step 2 (the endpoint and deployment names come from the project owner).
+5. `cp src/python/workshop/access_list.example.json src/python/workshop/access_list.json` and put your own name in it (role `super_manager`, or `store_manager` with a `store`).
+6. `cd src/python/web_app && python temp_access.py generate <your-name>` prints your access code once; keep it private. Then `cd ../../..`.
+7. Start: `bash scripts/run_agent.sh`. Leave that terminal open. Wait for "Ready", then open http://127.0.0.1:8005 and sign in with your code.
+8. Stop: press Ctrl+C in that terminal, or from another terminal run `bash scripts/run_agent.sh stop`. Check with `bash scripts/run_agent.sh status`.
+
+If it fails to start, the script says why; the logs are `logs/agent_service.out` and `logs/web_app.out`. Port 8006 is the back end only and has no page.
+
 ### Run it
 
 1. Sign in to Azure (`az login`). The agent calls Azure OpenAI with your Azure sign-in, not a key.
@@ -57,7 +70,7 @@ It checks that the ports are free, that the access list and the access codes exi
 (cd src/python/workshop && python test_answer_verifier.py && python test_agent_verification_loop.py && python test_access.py)
 python -m unittest tests.test_inventory_advisor            # tool tests against the live database
 RUN_AGENT_TESTS=1 python -m unittest tests.test_inventory_advisor   # also runs the agent (calls the model)
-python -m tests.evaluation                                  # 23 questions, writes docs/evaluation.md (about 7 minutes)
+python -m tests.evaluation                                  # 28 questions, writes docs/evaluation.md (about 7 minutes)
 ```
 
 ### Logs
