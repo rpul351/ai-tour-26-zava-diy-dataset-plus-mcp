@@ -123,6 +123,52 @@ def test_numbers_are_matched_to_the_evidence_at_their_own_precision():
     assert missing_from_evidence([4430801, 12.4, 5555], evidence) == [4430801, 12.4, 5555]
 
 
+def test_a_calculation_line_with_a_label_is_checked_on_its_arithmetic():
+    evidence = ["max 1.561 min 0.608"]
+    assert verify_answer("Scope: all\nMy calculation: GARDEN swing = 1.561 - 0.608 = 0.953", evidence).problems == []
+    assert verify_answer("Scope: all\nMy calculation: GARDEN swing = 1.561 - 0.608 = 0.900", evidence).problems
+
+
+def test_words_around_the_numbers_of_a_calculation_do_not_break_the_check():
+    ev = ["units_over_equal_cover: -26649, units_over_equal_cover: 6035"]
+    line = "Scope: all\nMy calculation: Seattle units_over_equal_cover (-26,649) + Kirkland units_over_equal_cover (6,035) = -20,614"
+    assert verify_answer(line, ev).problems == []
+    assert verify_answer(line.replace("-20,614", "-20,000"), ev).problems
+
+
+def test_a_table_cell_that_can_be_recomputed_from_its_row_is_accepted():
+    ev = ["Seattle units 25349 revenue 1726491.36 units_2022 26075"]
+    table = ("Scope: all\n\n| Store | Units | Revenue ($) | Revenue per unit ($) | Change vs 2022 (%) |\n|:---|---:|---:|---:|---:|\n"
+             "| Seattle | 25349 | 1726491.36 | 68.11 | -2.78 |\n")
+    assert verify_answer(table, ev).problems == []
+
+
+def test_a_table_cell_that_does_not_follow_from_its_row_is_still_flagged():
+    ev = ["Seattle units 25349 revenue 1726491.36 units_2022 26075"]
+    table = ("Scope: all\n\n| Store | Units | Revenue ($) | Revenue per unit ($) |\n|:---|---:|---:|---:|\n"
+             "| Seattle | 25349 | 1726491.36 | 99.11 |\n")
+    assert any("99.11" in p for p in verify_answer(table, ev).problems)
+
+
+def test_a_made_up_whole_number_cannot_pass_by_matching_a_tool_figure():
+    ev = ["units 25349 revenue 1726491.36 stock 13280 value 2456800.00 other 40 55 300 1000"]
+    table = "Scope: all\n\n| Store | Units |\n|:---|---:|\n| Seattle | 25349 |\n| Online | 13281 |\n"
+    assert any("13281" in p for p in verify_answer(table, ev).problems)
+
+
+def test_a_calculation_line_with_bracketed_labels_is_checked_on_its_arithmetic():
+    ev = ["revenue 1726491.36 units 25349"]
+    ok = "Scope: all\nMy calculation: 1726491.36 (revenue for Seattle) / 25349 (units for Seattle) = 68.11"
+    assert verify_answer(ok, ev).problems == []
+    assert verify_answer(ok.replace("68.11", "70.00"), ev).problems
+
+
+def test_the_rounded_value_after_an_arrow_is_what_is_checked():
+    ev = ["revenue 83369.67 units 1171"]
+    assert verify_answer("Scope: all\nMy calculation: 83369.67 / 1171 = 71.1955600352 -> 71.20", ev).problems == []
+    assert verify_answer("Scope: all\nMy calculation: 83369.67 / 1171 = 71.1955600352 -> 72.00", ev).problems
+
+
 if __name__ == "__main__":
     tests = [fn for name, fn in sorted(globals().items()) if name.startswith("test_")]
     for fn in tests:

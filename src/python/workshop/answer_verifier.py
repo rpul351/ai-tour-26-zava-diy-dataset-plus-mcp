@@ -96,6 +96,15 @@ def _evaluate(expression: str) -> float:
     return walk(ast.parse(expression, mode="eval"))
 
 
+def evaluate_arithmetic(expression: str) -> tuple[float, list[float]]:
+    """Evaluate plain arithmetic and return the result with every number it used. Raises ValueError if it is not plain arithmetic."""
+    text = _arithmetic(expression)
+    if not text or not re.fullmatch(r"[\d\s.+\-*/()]+", text):
+        raise ValueError("not plain arithmetic")
+    operands = [abs(float(m)) for m in re.findall(r"\d+(?:\.\d+)?", text)]
+    return _evaluate(text), operands
+
+
 def _arithmetic(text: str) -> str:
     text = text.replace("$", "").replace(",", "").replace("\u00d7", "*").replace("\u00f7", "/").replace("\u2212", "-")
     text = re.sub(r"(\d+(?:\.\d+)?)\s*%", r"(\1/100)", text)
@@ -106,6 +115,9 @@ def _check_calculation(line: str, values: list[float], result: Verification) -> 
     """Check a 'My calculation: <inputs> = <result>' line: inputs traced, arithmetic correct."""
     body = re.sub(r"^\W*my calculation[\s:]*", "", line.strip(), flags=re.IGNORECASE)
     inputs, stated = body.rsplit("=", 1)
+    stated = re.split(r"->|\u2192|\u2248|~", stated)[-1]  # "= 71.19556 -> 71.20": the rounded value is what the user reads
+    if "=" in inputs:  # "label = 1.5 - 0.5 = 1.0": check the arithmetic after the label
+        inputs = inputs.rsplit("=", 1)[1]
     for text, value, tolerance in _checkable_figures(inputs):
         label = text.strip()
         as_percentage = value < 1 and _present(values, value * 100, tolerance * 100)  # 0.4 for "40 percent"
@@ -113,6 +125,11 @@ def _check_calculation(line: str, values: list[float], result: Verification) -> 
             result.unverified.append(label)
 
     expression = _arithmetic(inputs)
+    if expression and not re.fullmatch(r"[\d\s.+\-*/()]+", expression):
+        unlabelled = re.sub(r"\([^()\d]*\)", " ", expression)  # "(revenue for Seattle)"
+        unlabelled = re.sub(r"[A-Za-z_][A-Za-z_0-9&']*", " ", unlabelled).strip()  # "Seattle units (5) + Kirkland units (6)"
+        if re.fullmatch(r"[\d\s.+\-*/()]+", unlabelled) and re.search(r"[+\-*/]", unlabelled):
+            expression = unlabelled
     if not expression or not re.fullmatch(r"[\d\s.+\-*/()]+", expression):
         result.issues.append(f"Calculation is not plain arithmetic on numbers: {line.strip()}")
         return
@@ -131,9 +148,61 @@ def _check_calculation(line: str, values: list[float], result: Verification) -> 
     decimals = len(digits.split(".")[1]) if "." in digits else 0
     claimed, tolerance = float(digits) * scale, 0.5 * 10 ** (-decimals) * scale
     if abs(abs(computed) - claimed) > tolerance + 1e-9:
-        result.issues.append(f"Calculation does not check out (it works out to {abs(computed):,.2f}): {line.strip()}")
+        result.issues.append(
+            f"Calculation does not check out (it works out to {abs(computed):,.2f}; "
+            f"state that result rounded to the same decimals you gave, or fewer): {line.strip()}"
+        )
         return
     insort(values, claimed)  # a confirmed result may be used by later lines
+
+
+_TABLE_ROW = re.compile(r"^\s*\|.*\|\s*$")
+
+
+def _row_numbers(line: str) -> list[float]:
+    """Every number in a table row, so a cell can be checked against the other cells in its row."""
+    return [abs(float(m.group().replace("$", "").replace(",", ""))) for m in _NUMBER.finditer(_DATE.sub(" ", line))]
+
+
+def _any_in(values: list[float], low: float, high: float) -> bool:
+    index = bisect_left(values, min(low, high) - 1e-9)
+    return index < len(values) and values[index] <= max(low, high) + 1e-9
+
+
+def _derivable(value: float, tolerance: float, row: list[float], evidence: list[float]) -> bool:
+    """True if value equals a sum, difference, product, ratio, percentage or percentage change of two numbers.
+
+    One number must come from the same table row. The other comes from the row too, or from a tool result when the
+    figure is shown to 2 or more decimals, so a made-up whole number cannot match one by coincidence.
+    """
+    low, high = value - tolerance, value + tolerance
+    use_evidence = tolerance <= 0.005 + 1e-12
+    for x in row:
+        if x <= 0:
+            continue
+        intervals = [
+            (low - x, high - x),  # x + y
+            (x - high, x - low),  # x - y
+            (low + x, high + x),  # y - x
+            (low / x, high / x),  # x * y
+            (low * x, high * x),  # y / x
+            (low * x / 100, high * x / 100),  # y as a percentage of x
+        ]
+        if low > 0:
+            intervals += [(x / high, x / low), (100 * x / high, 100 * x / low)]  # x / y and x as a percentage of y
+        for sign in (1, -1):  # the checker drops the sign, so a change of -2.78 arrives as 2.78
+            v_low, v_high = sorted((sign * low, sign * high))
+            if 1 + v_low / 100 > 0:
+                intervals.append((x * (1 + v_low / 100), x * (1 + v_high / 100)))  # y is x after a percentage change
+                intervals.append((x / (1 + v_high / 100), x / (1 + v_low / 100)))  # percentage change from y to x
+        for lo, hi in intervals:
+            if lo > hi:
+                lo, hi = hi, lo
+            if any(lo - 1e-9 <= y <= hi + 1e-9 for y in row if y != x or row.count(x) > 1):
+                return True
+            if use_evidence and _any_in(evidence, lo, hi):
+                return True
+    return False
 
 
 def verify_answer(answer: str, evidence: list[str]) -> Verification:
@@ -153,10 +222,16 @@ def verify_answer(answer: str, evidence: list[str]) -> Verification:
     for line in calculations:
         _check_calculation(line, values, result)
 
-    figures = _checkable_figures(prose)
-    for text, value, tolerance in figures:
-        label = text.strip()
-        if label not in result.unverified and not _present(values, value, tolerance):
+    figures = []
+    for line in prose.splitlines():
+        row = _row_numbers(line) if _TABLE_ROW.match(line) else None
+        for text, value, tolerance in _checkable_figures(line):
+            figures.append((text, value, tolerance))
+            label = text.strip()
+            if label in result.unverified or _present(values, value, tolerance):
+                continue
+            if row is not None and _derivable(value, tolerance, row, values):
+                continue
             result.unverified.append(label)
 
     joined = "\n".join(evidence)

@@ -30,6 +30,8 @@ Every answer is checked in code before it is sent. Figures must match a tool res
 
 ### Quick start for a teammate
 
+The full step-by-step guide, with the Azure access the owner must grant and a troubleshooting table, is [docs/teammate_guide.md](docs/teammate_guide.md). The short version:
+
 1. Open the repo in the dev container (it brings Python 3.13 and the database).
 2. `pip install -r src/python/requirements.txt`
 3. `az login --use-device-code`. Your Azure account needs permission to call the Azure OpenAI resource; ask the project owner to grant it.
@@ -70,7 +72,7 @@ It checks that the ports are free, that the access list and the access codes exi
 (cd src/python/workshop && python test_answer_verifier.py && python test_agent_verification_loop.py && python test_access.py)
 python -m unittest tests.test_inventory_advisor            # tool tests against the live database
 RUN_AGENT_TESTS=1 python -m unittest tests.test_inventory_advisor   # also runs the agent (calls the model)
-python -m tests.evaluation                                  # 28 questions, writes docs/evaluation.md (about 7 minutes)
+python -m tests.evaluation                                  # 39 questions, writes docs/evaluation.md (about 10 minutes)
 ```
 
 ### Logs
@@ -96,8 +98,11 @@ Without `ACCESS_LIST_FILE` the service uses the single `RLS_USER_ID` from `.env`
 - Stock levels in the dataset are synthetic and are not tied to sales, so the size of the excess reflects how the data was generated.
 - Each person's identity comes from the access list (see below). Real sign-in is not built: locally a temporary access code stands in for it.
 - Conversations are held in memory and are lost when the service restarts.
+- The dev container database uses the course's published `store_manager` password (it appears in the course files and in `tests/`). It is a local development credential only. Do not reuse it in Azure; use a new password from a secret store there.
 - Charts: ask for a bar chart, line chart or histogram. The agent draws it only from figures its data tools returned, and the image is served at `/charts/<name>` behind the login. Charts older than 24 hours are deleted.
-- Not yet answered well: how each store's seasonal pattern compares with the network's (no tool does that comparison).
+- Tables: ask for a table, or for extra and calculated columns (a ratio, a difference, a percentage). The agent draws a markdown table in the chat. A calculated cell is accepted only if it can be recomputed from other numbers in its row or from a tool result.
+- Downloads: ask for a CSV or PDF of a result. The agent writes the file only from figures its data tools returned, and the link is served at `/exports/<name>` behind the login. A file holds only the rows a tool returned (tool results are capped), and files older than 24 hours are deleted. It cannot email files.
+- A store manager can see only one store, so a comparison with other stores or the network is answered for their own store only.
 - There is no question limit unless `RATE_LIMIT_QUESTIONS` is set, the model client retries 3 times, and a tool call times out after 60 seconds. Tokens are logged but there is no cost figure.
 
 ## Contributions

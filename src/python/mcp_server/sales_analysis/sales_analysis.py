@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Annotated, Optional
+from typing import Annotated, List, Optional
 
 from mcp.server.fastmcp import Context, FastMCP
 from pydantic import Field
@@ -374,6 +374,134 @@ async def year_over_year_summary(
         rls_user_id=rls_user_id,
         year=year,
         compare_year=compare_year,
+    )
+
+
+@mcp.tool()
+async def store_seasonal_alignment(
+    ctx: Context,
+    category_name: Annotated[
+        Optional[str],
+        Field(description="Optional category name, for example 'HARDWARE'. Leave empty to use all categories together."),
+    ] = None,
+) -> str:
+    """Rank stores from most to least aligned with the yearly sales pattern of all visible stores together.
+
+    Use this for "which stores follow the national or company seasonal pattern and which differ".
+    Returns per store: a similarity score (1.0 is the same shape), the average monthly gap, the store's
+    peak and quietest month, and the network's peak. Do not ask the user for a category; leave it empty
+    for an overall answer, or run it for a category the user names. Small stores have noisy patterns.
+    A user who can see only one store gets a message instead, because there is nothing to compare with.
+    The result includes a scope field naming the stores covered. It honors the current RLS user context.
+    """
+    rls_user_id = get_rls_user_id(ctx)
+    provider = get_db_provider()
+    return await provider.store_seasonal_alignment(rls_user_id=rls_user_id, category_name=category_name)
+
+
+@mcp.tool()
+async def stock_cover_ranking(
+    ctx: Context,
+    store_id: Annotated[
+        Optional[int],
+        Field(description="Optional store ID. Leave empty for every store the current user can see."),
+    ] = None,
+    category_name: Annotated[
+        Optional[str],
+        Field(description="Optional category name, for example 'HARDWARE'. Leave empty for every category."),
+    ] = None,
+    by: Annotated[
+        str,
+        Field(description="'product' sums stock over the stores in scope. 'store_product' ranks each store and product pair."),
+    ] = "product",
+    min_months_cover: Annotated[
+        Optional[float],
+        Field(description="Only rank rows with more months of cover than this. 60 means more than 5 years of stock.", ge=0, le=1200),
+    ] = None,
+    window_days: Annotated[
+        int,
+        Field(description="Sales history in days, ending today, used to measure sales speed. Future-dated orders are excluded.", ge=30, le=1095),
+    ] = 365,
+    top_n: Annotated[
+        int,
+        Field(description="Number of rows to return, widest gap first. At most 50.", ge=1, le=50),
+    ] = 20,
+    skus: Annotated[
+        Optional[List[str]],
+        Field(description="Optional product SKUs, for example from semantic_search_products. Restricts the result to these products (for pairs: pairs that include at least one of them).", max_length=50),
+    ] = None,
+) -> str:
+    """Rank products by months of stock cover: the widest gap between stock held and how fast it sells.
+
+    Use this for "which products have the widest gap between inventory and sales velocity" and for
+    "which products have more than N years of stock" (set min_months_cover to 12 x N). The summary
+    reports how many rows are over the threshold and their share, so there is no need to list every one.
+    The result includes a scope field naming the stores covered. It honors the current RLS user context.
+    """
+    rls_user_id = get_rls_user_id(ctx)
+    provider = get_db_provider()
+    return await provider.stock_cover_ranking(
+        rls_user_id=rls_user_id,
+        store_id=store_id,
+        category_name=category_name,
+        by=by,
+        min_months_cover=min_months_cover,
+        window_days=window_days,
+        top_n=top_n,
+        skus=skus,
+    )
+
+
+@mcp.tool()
+async def frequently_bought_together(
+    ctx: Context,
+    store_id: Annotated[
+        Optional[int],
+        Field(description="Optional store ID. Leave empty for every store the current user can see."),
+    ] = None,
+    category_name: Annotated[
+        Optional[str],
+        Field(description="Optional category name. Only products in this category are paired."),
+    ] = None,
+    season: Annotated[
+        Optional[str],
+        Field(description="Optional season of the order date: winter (Dec-Feb), spring (Mar-May), summer (Jun-Aug) or autumn (Sep-Nov)."),
+    ] = None,
+    year: Annotated[
+        Optional[int],
+        Field(description="Optional calendar year of the orders.", ge=1900, le=2100),
+    ] = None,
+    min_orders: Annotated[
+        int,
+        Field(description="Only pairs that appear together in at least this many orders.", ge=1, le=1000),
+    ] = 3,
+    top_n: Annotated[
+        int,
+        Field(description="Number of pairs to return, most frequent first. At most 30.", ge=1, le=30),
+    ] = 10,
+    skus: Annotated[
+        Optional[List[str]],
+        Field(description="Optional product SKUs, for example from semantic_search_products. Restricts the result to these products (for pairs: pairs that include at least one of them).", max_length=50),
+    ] = None,
+) -> str:
+    """Rank pairs of products that are bought in the same order, with how much more often than chance.
+
+    Use this for "which products are bought together", with or without a store, category, season or year.
+    Each pair also carries its order counts for every season, so "does it differ by season" is answered
+    from one call. A pair with few orders is flagged as too thin to trust. Use the result for charts too.
+    The result includes a scope field naming the stores covered. It honors the current RLS user context.
+    """
+    rls_user_id = get_rls_user_id(ctx)
+    provider = get_db_provider()
+    return await provider.frequently_bought_together(
+        rls_user_id=rls_user_id,
+        store_id=store_id,
+        category_name=category_name,
+        season=season,
+        year=year,
+        min_orders=min_orders,
+        top_n=top_n,
+        skus=skus,
     )
 
 

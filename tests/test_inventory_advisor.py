@@ -153,6 +153,79 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out["scope"]["store_count"], 0)
         self.assertNotIn("recent_months", out)
 
+    # New tools: figures match independently written SQL, and a store user sees only their own store
+    async def test_stock_cover_matches_independent_sql(self):
+        out = await self.call("stock_cover_ranking", GLOBAL, min_months_cover=60, top_n=3)
+        rows = await sql_rows(
+            GLOBAL,
+            "SELECT p.product_name, st.s AS stock, COALESCE(sa.q, 0) AS sold FROM "
+            "(SELECT product_id, SUM(stock_level) s FROM retail.inventory GROUP BY 1) st "
+            "JOIN retail.products p USING (product_id) LEFT JOIN (SELECT oi.product_id, SUM(oi.quantity) q FROM retail.order_items oi "
+            "JOIN retail.orders o USING (order_id) WHERE o.order_date > CURRENT_DATE - 365 AND o.order_date <= CURRENT_DATE GROUP BY 1) sa USING (product_id)",
+        )
+        cover = sorted(((float(r["stock"]) / (float(r["sold"]) / (365 / 30.4375)), r["product_name"]) for r in rows if r["sold"] > 0), reverse=True)
+        over = [c for c in cover if c[0] > 60]
+        self.assertEqual(out["summary"]["rows_over_threshold"], len(over))
+        self.assertEqual(out["results"][0]["product_name"], over[0][1])
+        self.assertAlmostEqual(float(out["results"][0]["months_of_cover"]), over[0][0], delta=0.1)
+
+    async def test_bought_together_top_pair_matches_independent_sql(self):
+        out = await self.call("frequently_bought_together", GLOBAL, store_id=1, top_n=1)
+        top = out["results"][0]
+        rows = await sql_rows(
+            GLOBAL,
+            "SELECT COUNT(*) n FROM (SELECT a.order_id FROM retail.order_items a JOIN retail.order_items b ON a.order_id = b.order_id AND a.product_id < b.product_id "
+            "JOIN retail.orders o ON o.order_id = a.order_id JOIN retail.products pa ON pa.product_id = a.product_id JOIN retail.products pb ON pb.product_id = b.product_id "
+            "WHERE o.store_id = 1 AND o.order_date <= CURRENT_DATE AND pa.product_name = $1 AND pb.product_name = $2 GROUP BY a.order_id) x",
+            top["name_a"],
+            top["name_b"],
+        )
+        self.assertEqual(rows[0]["n"], top["orders_together"])
+        self.assertEqual(sum(top["orders_together_by_season"].values()), top["orders_together"])
+
+    async def test_seasonal_alignment_ranks_and_refuses_a_single_store(self):
+        out = await self.call("store_seasonal_alignment", GLOBAL)
+        scores = [r["similarity_to_network_pattern"] for r in out["results"]]
+        self.assertEqual(len(scores), 8)
+        self.assertEqual(scores, sorted(scores, reverse=True))
+        one = await self.call("store_seasonal_alignment", KIRKLAND)
+        self.assertEqual(one["results"], [])
+        self.assertIn("one store", one["message"].lower())
+
+    async def test_new_tools_show_a_store_user_only_their_store(self):
+        for name, kwargs in (("stock_cover_ranking", {"top_n": 5}), ("frequently_bought_together", {})):
+            out = await self.call(name, KIRKLAND, **kwargs)
+            self.assertEqual(out["scope"]["stores_included"], ["Zava Retail Kirkland"], name)
+
+    async def test_bought_together_is_fast_for_every_store_and_filter(self):
+        # A catch-all filter once made the largest store take over 30 seconds and fail.
+        for store_id in (None, 1, 2, 3, 4, 5, 6, 7, 8):
+            started = time.perf_counter()
+            out = await self.call("frequently_bought_together", GLOBAL, store_id=store_id, top_n=20)
+            self.assertNotIn("error", out, store_id)
+            self.assertLess(time.perf_counter() - started, 10, f"store {store_id}")
+            self.assertEqual(out["row_count"], 20)
+
+    async def test_sku_filter_limits_both_tools_to_exactly_those_products(self):
+        skus = ["PFEP000010", "pfep000008"]
+        names = {r["product_name"] for r in await sql_rows(GLOBAL, "SELECT product_name FROM retail.products WHERE UPPER(sku) = ANY($1::text[])", [x.upper() for x in skus])}
+        cover = await self.call("stock_cover_ranking", GLOBAL, skus=skus, top_n=10)
+        self.assertEqual({r["product_name"] for r in cover["results"]}, names)
+        self.assertEqual(cover["summary"]["rows_in_scope"], len(names))
+        pairs = await self.call("frequently_bought_together", GLOBAL, skus=skus, min_orders=1, top_n=5)
+        self.assertGreater(pairs["row_count"], 0)
+        for r in pairs["results"]:
+            self.assertTrue(r["name_a"] in names or r["name_b"] in names, r)
+        self.assertIn("None of these SKUs", (await self.call("frequently_bought_together", GLOBAL, skus=["NOPE"]))["message"])
+        own = await self.call("stock_cover_ranking", KIRKLAND, skus=skus, top_n=10)
+        self.assertEqual(own["scope"]["stores_included"], ["Zava Retail Kirkland"])
+
+    async def test_new_tools_reject_bad_values_in_plain_words(self):
+        self.assertIn("season", (await self.call("frequently_bought_together", GLOBAL, season="monsoon"))["error"])
+        self.assertIn("by must", (await self.call("stock_cover_ranking", GLOBAL, by="shelf"))["error"])
+        self.assertIn("valid_categories", await self.call("stock_cover_ranking", GLOBAL, category_name="NOPE"))
+
+
     async def test_e5_store_user_sees_only_own_store_in_every_tool(self):
         for name, kwargs in (
             ("rank_capital_tied_up", {"top_n": 5}),

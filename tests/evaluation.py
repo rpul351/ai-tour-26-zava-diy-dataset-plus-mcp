@@ -22,6 +22,7 @@ from tests.test_inventory_advisor import GLOBAL, KIRKLAND, ROOT, expected_top_ex
 sys.path.insert(0, str(ROOT / "src" / "python" / "workshop"))
 import agent_service as svc  # noqa: E402
 import charts  # noqa: E402
+import exports  # noqa: E402
 
 IDENTITIES = {"global": GLOBAL, "kirkland": KIRKLAND}
 CONCURRENCY = 3
@@ -75,8 +76,11 @@ async def ground_truth() -> dict:
         if seasonal.get("peak_is_near"):
             near_peak = row["category_name"]
             break
-    excess = json.loads(await svc_provider().rank_capital_tied_up(rls_user_id=GLOBAL, top_n=1))["results"][0]["total_excess_value_in_scope"]
+    excess = (await svc_provider().rank_capital_tied_up(rls_user_id=GLOBAL, top_n=1))
+    excess = json.loads(excess)["results"][0]["total_excess_value_in_scope"]
+    team = await team_ground_truth()
     return {
+        **team,
         "names": names,
         "top5": [names[p] for p, _, _ in await expected_top_excess(None, top_n=5)],
         "kirkland_top3": [names[p] for p, _, _ in await expected_top_excess(kirkland_id, top_n=3)],
@@ -96,6 +100,65 @@ async def ground_truth() -> dict:
 _provider = None
 
 
+async def team_ground_truth() -> dict:
+    """Independent figures for the questions the team asked, computed without the agent's tools."""
+    import statistics
+
+    cover_rows = await sql_rows(
+        GLOBAL,
+        "SELECT p.product_name, st.s AS stock, COALESCE(sa.q, 0) AS sold FROM "
+        "(SELECT product_id, SUM(stock_level) s FROM retail.inventory GROUP BY 1) st JOIN retail.products p USING (product_id) "
+        "LEFT JOIN (SELECT oi.product_id, SUM(oi.quantity) q FROM retail.order_items oi JOIN retail.orders o USING (order_id) "
+        "WHERE o.order_date > CURRENT_DATE - 365 AND o.order_date <= CURRENT_DATE GROUP BY 1) sa USING (product_id)",
+    )
+    cover = sorted(((float(r["stock"]) / (float(r["sold"]) / (365 / 30.4375)), r["product_name"]) for r in cover_rows if r["sold"] > 0), reverse=True)
+    over = [c for c in cover if c[0] > 60]
+
+    monthly = await sql_rows(
+        GLOBAL,
+        "SELECT s.store_name, EXTRACT(YEAR FROM o.order_date)::int y, EXTRACT(MONTH FROM o.order_date)::int m, SUM(oi.quantity) u "
+        "FROM retail.order_items oi JOIN retail.orders o USING (order_id) JOIN retail.stores s ON s.store_id = oi.store_id "
+        "WHERE o.order_date >= '2020-01-01' AND o.order_date < '2026-01-01' GROUP BY 1, 2, 3",
+    )
+    years = range(2020, 2026)
+
+    def index(select) -> list[float]:
+        totals: dict = {}
+        for r in monthly:
+            if select(r):
+                totals[(r["y"], r["m"])] = totals.get((r["y"], r["m"]), 0) + float(r["u"])
+        avg = {y: sum(v for (yy, _), v in totals.items() if yy == y) / 12 for y in years}
+        return [sum(totals[(y, m)] / avg[y] for y in years) / len(years) for m in range(1, 13)]
+
+    network = index(lambda r: True)
+    scores = {n: statistics.correlation(index(lambda r, n=n: r["store_name"] == n), network) for n in {r["store_name"] for r in monthly}}
+    ranked = sorted(scores, key=scores.get, reverse=True)
+
+    pair = (await sql_rows(
+        GLOBAL,
+        "SELECT pa.product_name a, pb.product_name b, COUNT(DISTINCT x.order_id) n FROM retail.order_items x "
+        "JOIN retail.order_items y ON y.order_id = x.order_id AND y.product_id > x.product_id "
+        "JOIN retail.orders o ON o.order_id = x.order_id JOIN retail.products pa ON pa.product_id = x.product_id "
+        "JOIN retail.products pb ON pb.product_id = y.product_id WHERE o.store_id = 1 AND o.order_date <= CURRENT_DATE "
+        "GROUP BY 1, 2 ORDER BY 3 DESC, 1, 2 LIMIT 1",
+    ))[0]
+    per_store = await sql_rows(
+        GLOBAL,
+        "SELECT s.store_name, SUM(oi.quantity) u, SUM(oi.total_amount) r FROM retail.order_items oi JOIN retail.orders o USING (order_id) "
+        "JOIN retail.stores s ON s.store_id = oi.store_id WHERE EXTRACT(YEAR FROM o.order_date) = 2023 GROUP BY 1",
+    )
+    revenue_per_unit = {r["store_name"]: f"{float(r['r']) / float(r['u']):.2f}" for r in per_store}
+    return {
+        "revenue_per_unit": revenue_per_unit,
+        "cover_by_name": {name: c for c, name in cover if name in ("Weatherproof Box", "Weather Resistant Outlet")},
+        "over5_count": len(over),
+        "over5_top": over[0][1],
+        "most_aligned": ranked[0],
+        "least_aligned": ranked[-1],
+        "seattle_pair": (pair["a"], pair["b"], pair["n"]),
+    }
+
+
 def svc_provider():
     return _provider
 
@@ -113,6 +176,22 @@ def build_cases(t: dict) -> list[Case]:
             (all((charts.CHART_DIR / n).is_file() for n in names) and bool(names), "chart file does not exist"),
             (not a.rstrip().endswith("?"), "ended with a question to the user"),
         )
+
+    def no_offer(a: str) -> list[str]:
+        return [] if not svc.closing_question(a, True) else ["ended with a question or an offer"]
+
+    def file_checks(a: str, ext: str) -> list[str]:
+        names = re.findall(r"\]\(/exports/(e[0-9a-f]{20}\." + ext + r")\)", a)
+        ok = bool(names) and all((exports.EXPORT_DIR / n).is_file() and (exports.EXPORT_DIR / n).stat().st_size > 200 for n in names)
+        return collect((bool(names), f"no {ext} download link in the answer"), (ok, "download file does not exist"))
+
+    def table_checks(a: str, min_rows: int = 3) -> list[str]:
+        block = [ln.strip() for ln in a.splitlines() if ln.strip().startswith("|") and ln.strip().endswith("|")]
+        if len(block) < 2 + min_rows:
+            return [f"no markdown table with {min_rows} or more rows"]
+        widths = {ln.count("|") for ln in block}
+        header_ok = bool(re.fullmatch(r"\|[\s:\-|]+\|", block[1]))
+        return collect((header_ok, "table has no header separator row"), (len(widths) == 1, "table rows have different numbers of columns"))
 
     excess = t["network_excess"]
     # Success criteria E3 (seasonal guard) and E6 (honest limits). Rules were fixed before the first run of these cases.
@@ -168,6 +247,43 @@ def build_cases(t: dict) -> list[Case]:
         Case("E4", "Edge case", "global", "Compare Garden & Outdoor stock cover between Kirkland and Seattle.",
              "Uses both stores and says the imbalance is relative.",
              lambda a: collect(("Kirkland" in a and "Seattle" in a, "both stores not named"), ("Verification note" not in a, "verification note present"))),
+        # The team's own questions. Rules fixed before the first run of these cases.
+        Case("T1", "Team question", "global", "Which stores are most and least aligned to the national seasonal pattern?",
+             f"Names {t['most_aligned']} as most aligned and {t['least_aligned']} as least, with no question back.",
+             lambda a: scope(a) + no_offer(a) + collect((t["most_aligned"].replace("Zava Retail ", "") in a, "most aligned store not named"), (t["least_aligned"].replace("Zava Retail ", "") in a, "least aligned store not named"))),
+        Case("T2", "Team question", "global", "Which products have more than 5 years of stock?",
+             f"{t['over5_count']} products, led by {t['over5_top']}, with no question back.",
+             lambda a: scope(a) + no_offer(a) + collect((has(a, t["over5_count"]), "count of products over 5 years"), (t["over5_top"] in a, "top product not named"))),
+        Case("T3", "Team question", "global", "Which top 5 products are frequently bought together in seattle store and can you give me simple graph",
+             f"Top pair {t['seattle_pair'][0]} with {t['seattle_pair'][1]} ({t['seattle_pair'][2]} orders) and a chart.",
+             lambda a: scope(a) + no_offer(a) + chart_checks(a) + collect((t["seattle_pair"][0] in a and t["seattle_pair"][1] in a, "top pair not named"), (has(a, t["seattle_pair"][2]), "pair order count"))),
+        Case("T4", "Team question", "kirkland", "Which stores are most and least aligned to the national seasonal pattern?",
+             "Says one store is visible so there is nothing to compare, shows no other store's pattern, and offers no options.",
+             lambda a: no_offer(a) + collect((bool(DECLINE.search(a) or re.search(r"(?i)one store|only (see|one)", a)), "did not say it cannot compare"), (t["most_aligned"] not in a or t["most_aligned"] == "Zava Retail Kirkland", "named another store's alignment"))),
+        Case("T5", "Team question", "global", "Which products are frequently bought together, and does that differ by store or season?",
+             "Answers for the network and by season in one reply, with no question back.",
+             lambda a: scope(a) + no_offer(a) + collect((bool(re.search(r"(?i)spring|summer|winter|autumn|season", a)), "seasons not discussed"))),
+        # Downloads (colleagues asked for PDF and CSV). Rules fixed before the first run of these cases.
+        Case("D1", "Download", "global", "Which products have more than 5 years of stock? Give me a CSV I can download",
+             "A CSV download link whose file exists, a scope line, and no promise to email it.",
+             lambda a: scope(a) + file_checks(a, "csv") + collect((not re.search(r"(?i)i (will|'ll) (email|send)", a), "promised to email the file"))),
+        Case("D2", "Download", "kirkland", "Give me a PDF of the top excess stock in my store",
+             "A PDF download link whose file exists and Kirkland named.",
+             lambda a: file_checks(a, "pdf") + collect(("Kirkland" in a, "Kirkland not named"))),
+        # Tables (colleagues could not get data as a table). Rules fixed before the first run of these cases.
+        Case("TB1", "Table", "global", "Show the top 5 products by excess stock as a table",
+             f"A markdown table of five products in ground truth order: {', '.join(t['top5'])}.",
+             lambda a: scope(a) + table_checks(a, 5) + [f"missing {n}" for n in t["top5"] if n not in a]),
+        Case("TB2", "Table", "kirkland", "Give me a table of my store's units sold in 2023, by month",
+             "A markdown table with Kirkland's monthly figures (12 rows or a clear subset) and Kirkland named.",
+             lambda a: table_checks(a, 6) + collect(("Kirkland" in a, "Kirkland not named"))),
+        Case("TB3", "Table", "global", "Table of units sold and revenue by store in 2023, with a new column for revenue per unit",
+             "A markdown table of all 8 stores with a calculated revenue-per-unit column matching independent SQL, and no verification note.",
+             lambda a: scope(a) + table_checks(a, 8) + collect(("Verification note" not in a, "verification note present")) + [f"missing revenue per unit {v} for {k}" for k, v in t["revenue_per_unit"].items() if v not in a]),
+        # Semantic search combined with stock analysis (course guidance: combining the two servers). Rules fixed before the first run.
+        Case("C3", "Combined", "global", "I need something to protect electrical connections outdoors. How many months of stock do we hold of those products?",
+             "Finds the outdoor electrical products by meaning, then gives the months of cover for them that match independent SQL.",
+             lambda a: scope(a) + no_offer(a) + collect((any(n in a and f"{v:.1f}" in a for n, v in t["cover_by_name"].items()), "no found product with its correct months of cover"))),
         *guard,
         *limits,
         # Charts (team report: no bar chart or histogram). Rules fixed before the first run of these cases.
