@@ -30,6 +30,8 @@ Every answer is checked in code before it is sent. Figures must match a tool res
 
 ### Quick start for a teammate
 
+The full step-by-step guide, with the Azure access the owner must grant and a troubleshooting table, is [docs/teammate_guide.md](docs/teammate_guide.md). The short version:
+
 1. Open the repo in the dev container (it brings Python 3.13 and the database).
 2. `pip install -r src/python/requirements.txt`
 3. `az login --use-device-code`. Your Azure account needs permission to call the Azure OpenAI resource; ask the project owner to grant it.
