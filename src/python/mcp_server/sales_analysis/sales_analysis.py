@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Annotated, Optional
+from typing import Annotated, List, Optional
 
 from mcp.server.fastmcp import Context, FastMCP
 from pydantic import Field
@@ -426,6 +426,10 @@ async def stock_cover_ranking(
         int,
         Field(description="Number of rows to return, widest gap first. At most 50.", ge=1, le=50),
     ] = 20,
+    skus: Annotated[
+        Optional[List[str]],
+        Field(description="Optional product SKUs, for example from semantic_search_products. Restricts the result to these products (for pairs: pairs that include at least one of them).", max_length=50),
+    ] = None,
 ) -> str:
     """Rank products by months of stock cover: the widest gap between stock held and how fast it sells.
 
@@ -444,6 +448,7 @@ async def stock_cover_ranking(
         min_months_cover=min_months_cover,
         window_days=window_days,
         top_n=top_n,
+        skus=skus,
     )
 
 
@@ -474,6 +479,10 @@ async def frequently_bought_together(
         int,
         Field(description="Number of pairs to return, most frequent first. At most 30.", ge=1, le=30),
     ] = 10,
+    skus: Annotated[
+        Optional[List[str]],
+        Field(description="Optional product SKUs, for example from semantic_search_products. Restricts the result to these products (for pairs: pairs that include at least one of them).", max_length=50),
+    ] = None,
 ) -> str:
     """Rank pairs of products that are bought in the same order, with how much more often than chance.
 
@@ -492,6 +501,7 @@ async def frequently_bought_together(
         year=year,
         min_orders=min_orders,
         top_n=top_n,
+        skus=skus,
     )
 
 

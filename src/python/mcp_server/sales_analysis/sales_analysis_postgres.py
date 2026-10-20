@@ -1582,6 +1582,7 @@ class PostgreSQLSchemaProvider:
         min_months_cover: Optional[float] = None,
         window_days: int = 365,
         top_n: int = 20,
+        skus: Optional[List[str]] = None,
     ) -> str:
         """Rank products (or store and product pairs) by months of stock cover, widest gap between stock and sales first."""
         conn = None
@@ -1634,6 +1635,7 @@ class PostgreSQLSchemaProvider:
                     {"JOIN retail.stores s ON s.store_id = st.store_id" if per_store else ""}
                     LEFT JOIN sales sa ON sa.product_id = st.product_id {"AND sa.store_id = st.store_id" if per_store else ""}
                     WHERE ($3::text IS NULL OR UPPER(c.category_name) = UPPER($3::text))
+                      AND ($6::text[] IS NULL OR UPPER(p.sku) = ANY($6::text[]))
                 ),
                 summary AS (
                     SELECT COUNT(*) AS rows_in_scope,
@@ -1651,7 +1653,8 @@ class PostgreSQLSchemaProvider:
                 LIMIT $5::int
             """
             threshold = 0 if min_months_cover is None else min_months_cover
-            rows = await conn.fetch(sql, window_days, store_id, category_name, threshold, top_n)
+            wanted_skus = [x.strip().upper() for x in skus] if skus else None
+            rows = await conn.fetch(sql, window_days, store_id, category_name, threshold, top_n, wanted_skus)
             parameters = {
                 "store_id": store_id,
                 "category_name": category_name,
@@ -1660,6 +1663,7 @@ class PostgreSQLSchemaProvider:
                 "window_days": window_days,
                 "window_end": await conn.fetchval("SELECT CURRENT_DATE"),
                 "top_n": top_n,
+                "skus": wanted_skus,
             }
             if not rows:
                 counts = await conn.fetchrow(
@@ -1722,6 +1726,7 @@ class PostgreSQLSchemaProvider:
         year: Optional[int] = None,
         min_orders: int = 3,
         top_n: int = 10,
+        skus: Optional[List[str]] = None,
     ) -> str:
         """Rank pairs of products that appear in the same order, with how much more often than chance."""
         seasons = {"winter": [12, 1, 2], "spring": [3, 4, 5], "summer": [6, 7, 8], "autumn": [9, 10, 11]}
@@ -1767,7 +1772,16 @@ class PostgreSQLSchemaProvider:
                     "JOIN retail.categories c ON c.category_id = p.category_id"
                 )
                 conditions.append(f"UPPER(c.category_name) = UPPER({bind(category_name)}::text)")
+            wanted_skus = [x.strip().upper() for x in skus] if skus else None
+            if wanted_skus:
+                known = await conn.fetchval("SELECT COUNT(*) FROM retail.products WHERE UPPER(sku) = ANY($1::text[])", wanted_skus)
+                if not known:
+                    return json.dumps({"results": [], "row_count": 0, "scope": scope, "message": "None of these SKUs match a product."}, indent=2)
             min_param, top_param = bind(min_orders), bind(top_n)
+            pair_filter = ""
+            if wanted_skus:
+                wanted_param = bind(wanted_skus)
+                pair_filter = f"AND (a.product_id IN (SELECT product_id FROM retail.products WHERE UPPER(sku) = ANY({wanted_param}::text[])) OR b.product_id IN (SELECT product_id FROM retail.products WHERE UPPER(sku) = ANY({wanted_param}::text[])))"
             sql = f"""
                 WITH items AS MATERIALIZED (
                     SELECT DISTINCT oi.order_id, oi.product_id
@@ -1781,6 +1795,7 @@ class PostgreSQLSchemaProvider:
                 pairs AS (
                     SELECT a.product_id AS a, b.product_id AS b, COUNT(*) AS together
                     FROM items a JOIN items b ON a.order_id = b.order_id AND a.product_id < b.product_id
+                    WHERE TRUE {pair_filter}
                     GROUP BY 1, 2
                     HAVING COUNT(*) >= {min_param}::int
                     ORDER BY together DESC, 1, 2
@@ -1808,6 +1823,7 @@ class PostgreSQLSchemaProvider:
                 "year": year,
                 "min_orders": min_orders,
                 "top_n": top_n,
+                "skus": wanted_skus,
                 "window_end": await conn.fetchval("SELECT CURRENT_DATE"),
             }
             if not rows:

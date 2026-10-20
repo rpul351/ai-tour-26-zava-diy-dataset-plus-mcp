@@ -142,7 +142,15 @@ async def team_ground_truth() -> dict:
         "JOIN retail.products pb ON pb.product_id = y.product_id WHERE o.store_id = 1 AND o.order_date <= CURRENT_DATE "
         "GROUP BY 1, 2 ORDER BY 3 DESC, 1, 2 LIMIT 1",
     ))[0]
+    per_store = await sql_rows(
+        GLOBAL,
+        "SELECT s.store_name, SUM(oi.quantity) u, SUM(oi.total_amount) r FROM retail.order_items oi JOIN retail.orders o USING (order_id) "
+        "JOIN retail.stores s ON s.store_id = oi.store_id WHERE EXTRACT(YEAR FROM o.order_date) = 2023 GROUP BY 1",
+    )
+    revenue_per_unit = {r["store_name"]: f"{float(r['r']) / float(r['u']):.2f}" for r in per_store}
     return {
+        "revenue_per_unit": revenue_per_unit,
+        "cover_by_name": {name: c for c, name in cover if name in ("Weatherproof Box", "Weather Resistant Outlet")},
         "over5_count": len(over),
         "over5_top": over[0][1],
         "most_aligned": ranked[0],
@@ -176,6 +184,14 @@ def build_cases(t: dict) -> list[Case]:
         names = re.findall(r"\]\(/exports/(e[0-9a-f]{20}\." + ext + r")\)", a)
         ok = bool(names) and all((exports.EXPORT_DIR / n).is_file() and (exports.EXPORT_DIR / n).stat().st_size > 200 for n in names)
         return collect((bool(names), f"no {ext} download link in the answer"), (ok, "download file does not exist"))
+
+    def table_checks(a: str, min_rows: int = 3) -> list[str]:
+        block = [ln.strip() for ln in a.splitlines() if ln.strip().startswith("|") and ln.strip().endswith("|")]
+        if len(block) < 2 + min_rows:
+            return [f"no markdown table with {min_rows} or more rows"]
+        widths = {ln.count("|") for ln in block}
+        header_ok = bool(re.fullmatch(r"\|[\s:\-|]+\|", block[1]))
+        return collect((header_ok, "table has no header separator row"), (len(widths) == 1, "table rows have different numbers of columns"))
 
     excess = t["network_excess"]
     # Success criteria E3 (seasonal guard) and E6 (honest limits). Rules were fixed before the first run of these cases.
@@ -254,6 +270,20 @@ def build_cases(t: dict) -> list[Case]:
         Case("D2", "Download", "kirkland", "Give me a PDF of the top excess stock in my store",
              "A PDF download link whose file exists and Kirkland named.",
              lambda a: file_checks(a, "pdf") + collect(("Kirkland" in a, "Kirkland not named"))),
+        # Tables (colleagues could not get data as a table). Rules fixed before the first run of these cases.
+        Case("TB1", "Table", "global", "Show the top 5 products by excess stock as a table",
+             f"A markdown table of five products in ground truth order: {', '.join(t['top5'])}.",
+             lambda a: scope(a) + table_checks(a, 5) + [f"missing {n}" for n in t["top5"] if n not in a]),
+        Case("TB2", "Table", "kirkland", "Give me a table of my store's units sold in 2023, by month",
+             "A markdown table with Kirkland's monthly figures (12 rows or a clear subset) and Kirkland named.",
+             lambda a: table_checks(a, 6) + collect(("Kirkland" in a, "Kirkland not named"))),
+        Case("TB3", "Table", "global", "Table of units sold and revenue by store in 2023, with a new column for revenue per unit",
+             "A markdown table of all 8 stores with a calculated revenue-per-unit column matching independent SQL, and no verification note.",
+             lambda a: scope(a) + table_checks(a, 8) + collect(("Verification note" not in a, "verification note present")) + [f"missing revenue per unit {v} for {k}" for k, v in t["revenue_per_unit"].items() if v not in a]),
+        # Semantic search combined with stock analysis (course guidance: combining the two servers). Rules fixed before the first run.
+        Case("C3", "Combined", "global", "I need something to protect electrical connections outdoors. How many months of stock do we hold of those products?",
+             "Finds the outdoor electrical products by meaning, then gives the months of cover for them that match independent SQL.",
+             lambda a: scope(a) + no_offer(a) + collect((any(n in a and f"{v:.1f}" in a for n, v in t["cover_by_name"].items()), "no found product with its correct months of cover"))),
         *guard,
         *limits,
         # Charts (team report: no bar chart or histogram). Rules fixed before the first run of these cases.

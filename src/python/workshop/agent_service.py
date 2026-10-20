@@ -38,7 +38,7 @@ from pydantic import BaseModel, Field
 import charts
 import exports
 from access import GLOBAL_RLS_ID, STORE_RLS_IDS, AccessList, describe_viewer, load_access_list, normalise
-from answer_verifier import missing_from_evidence, verify_answer
+from answer_verifier import evaluate_arithmetic, missing_from_evidence, verify_answer
 
 load_dotenv(Path(__file__).resolve().parents[3] / ".env", override=False)
 
@@ -187,6 +187,69 @@ async def make_export_result(arguments_text: str, evidence: list[str], message: 
     return f"File created. Put exactly this line in your answer: [{label}](/exports/{name})"
 
 
+CALC_TOOL_NAME = "calculate"
+MAX_CALCULATIONS = 100
+CONSTANTS = {1, 2, 4, 7, 12, 30, 52, 100, 365, 1000}  # conversion factors; every other operand must come from a tool
+# Handled by this service. A model is unreliable at long division, so derived figures are worked out here, exactly.
+CALC_TOOL = {
+    "type": "function",
+    "function": {
+        "name": CALC_TOOL_NAME,
+        "description": (
+            "Work out derived figures exactly: a ratio, difference, sum, product, percentage or per-unit value. Use it for every "
+            "figure you derive instead of doing arithmetic yourself. Every number in an expression must already appear in a tool "
+            "result in this conversation or in the user's question. Use + - * / and brackets, for example "
+            "'1726491.36 / 25349' or '100 * (25349 - 26075) / 26075'. Returns each result rounded to 2 decimals."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "calculations": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"label": {"type": "string"}, "expression": {"type": "string"}},
+                        "required": ["label", "expression"],
+                    },
+                    "description": f"Up to {MAX_CALCULATIONS} calculations, for example one per row of a table.",
+                }
+            },
+            "required": ["calculations"],
+        },
+    },
+}
+
+
+def calculate_result(arguments_text: str, evidence: list[str], message: str) -> str:
+    try:
+        items = json.loads(arguments_text or "{}").get("calculations")
+    except (json.JSONDecodeError, AttributeError):
+        return "Tool error: arguments were not valid JSON."
+    if not isinstance(items, list) or not items or len(items) > MAX_CALCULATIONS:
+        return f"Tool error: give 1 to {MAX_CALCULATIONS} calculations."
+    rows = []
+    for item in items:
+        label = str(item.get("label", "")) if isinstance(item, dict) else ""
+        expression = item.get("expression") if isinstance(item, dict) else None
+        if not isinstance(expression, str) or not expression.strip():
+            return "Tool error: every calculation needs an expression."
+        try:
+            value, operands = evaluate_arithmetic(expression)
+        except ZeroDivisionError:
+            rows.append({"label": label, "expression": expression, "error": "division by zero"})
+            continue
+        except (ValueError, SyntaxError):
+            return f"Tool error: '{expression[:60]}' is not plain arithmetic. Use numbers, + - * / and brackets."
+        missing = missing_from_evidence([x for x in operands if x not in CONSTANTS], [*evidence, message])
+        if missing:
+            return (
+                f"Tool error: these numbers were not in any data returned so far: {missing[:8]}. "
+                "Use only figures your data tools returned, or fetch the data first."
+            )
+        rows.append({"label": label, "expression": expression, "result": f"{value:.2f}"})
+    return json.dumps({"calculations": rows, "note": "Results are rounded to 2 decimals. Use them exactly as given."}, indent=1)
+
+
 CONTENT_FILTER_MESSAGE = (
     "This request was blocked by the Azure OpenAI content policy, for example because it looks like an attempt "
     "to override the assistant's instructions. Please rephrase it as a question about Zava inventory, stock or sales."
@@ -206,19 +269,20 @@ Rules
 - Orders dated after today are not real sales. Windows must end today.
 - Fetch table schemas before writing SQL. Use exact column names and limit results.
 - For product lookups use get_products_by_name (by name) or semantic_search_products (by description). For history and trends: ALWAYS call year_over_year_summary first for any question about a calendar year, a comparison between years, or "what happened in <year>". Never write SQL for those. Use execute_sales_query only for questions no dedicated tool covers. Give the change and where it is concentrated, and do not invent causes the data does not hold. A year_over_year_summary result already holds the totals, every store, every category and every month, so in one answer give both years' totals and the change in units, revenue and orders, then the movers listed under biggest_movers (they cover both amount and percentage). Do not offer breakdowns you already have.
-- Prefer the dedicated tools (rank_capital_tied_up, compare_store_coverage, seasonal_baseline_check, year_over_year_summary, store_seasonal_alignment, stock_cover_ranking, frequently_bought_together) for stock, coverage, seasonal, year, store-pattern and bought-together figures. Use store_seasonal_alignment for which stores follow or differ from the company seasonal pattern (leave the category empty unless the user names one), stock_cover_ranking for the gap between stock and sales speed or for products with more than N years of stock, and frequently_bought_together for product pairs by store, season, year or category. Write your own SQL only for questions they cannot answer. Never join inventory to order_items in one query and then sum stock: that repeats each stock row once per order line. Aggregate stock and sales separately, then join.
+- Prefer the dedicated tools (rank_capital_tied_up, compare_store_coverage, seasonal_baseline_check, year_over_year_summary, store_seasonal_alignment, stock_cover_ranking, frequently_bought_together) for stock, coverage, seasonal, year, store-pattern and bought-together figures. Use store_seasonal_alignment for which stores follow or differ from the company seasonal pattern (leave the category empty unless the user names one), stock_cover_ranking for the gap between stock and sales speed or for products with more than N years of stock, and frequently_bought_together for product pairs by store, season, year or category. To analyse products you found with semantic_search_products or get_products_by_name, pass their SKUs in the skus argument of stock_cover_ranking or frequently_bought_together, so the figures cover exactly those products instead of a top-N list. Write your own SQL only for questions they cannot answer. Never join inventory to order_items in one query and then sum stock: that repeats each stock row once per order line. Aggregate stock and sales separately, then join.
 - Never say you cannot answer a Zava question because no tool matches it. Work it out from the data yourself: fetch the table schemas, write read-only SQL with execute_sales_query, check the result, and answer. If the data cannot answer it, say what is missing in one sentence and give the closest figures you do have. Show at most 10 rows of any list and give the count for the rest.
 - If a comparison needs stores this user cannot see, say so in one sentence, then answer with the closest thing you can do for their own scope (for example their own seasonal pattern per category) in the same answer, and do not offer options.
 - Every tool result that has a "scope" field lists the stores it covers. Begin any answer that contains figures with a line "Scope: <the stores listed>". If covers_all_stores is true the figures are network totals and you may say so. If it is false, and the user asks for a network, company or all-store figure, say plainly that you can only see the listed stores and cannot give a network total, then label the figure with those stores. Never call a figure a network total unless covers_all_stores is true.
 - Value at cost is an upper bound on cash released by clearing stock, not the cash itself. Say so.
 - Never place orders, clear stock or move stock. Present every recommendation as a draft for a person to approve, with the evidence behind it.
-- Your answer is checked automatically before the user sees it. Every figure must appear in a tool result from this conversation. If you work a figure out yourself, put it on its own line in the form "My calculation: <inputs> = <result>", using only inputs that appear in tool results or in the user's question. Do not round to a different precision than the tool gives, and do not quote figures from memory.
+- Your answer is checked automatically before the user sees it. Every figure must appear in a tool result from this conversation. If you work a figure out yourself, put it on its own line in the form "My calculation: <inputs> = <result>", using only inputs that appear in tool results or in the user's question. Never do arithmetic yourself: for any figure you derive (a ratio, difference, percentage, total or per-unit value) call calculate with figures from tool results and use its results exactly, in a table or in the text. Write a calculated result with at most 2 decimals and no extra digits. Do not round to a different precision than the tool gives, and do not quote figures from memory.
 
 Workflows
 1. Excess stock: rank where capital is tied up (rank_capital_tied_up). It also reports total_stock_units_in_scope and total_stock_value_in_scope, so use it for "how much stock do we have". Each ranked product carries a clearance_guard. If it says do not clear, do not recommend clearing that product. Give the value at cost released by each action.
 2. Store allocation: use compare_store_coverage. Say that the imbalance is relative, not a shortage, and that transfer costs are not in the data. If only one store is in scope, say there is nothing to compare against.
 3. Seasonal watch: use seasonal_baseline_check and say where any shift is concentrated. Lead times are not in the data. Ask the user for one, or label your assumption clearly.
 
+- Tables: whenever the user asks for a table, or your answer lists three or more items that each have two or more figures (products, stores, months, categories), present them as a markdown table with a header row, one row per item, readable column names with units (for example "Stock units", "Value at cost ($)"), and numbers in their own columns. By default keep a table to the columns that answer the question, but always include every column the user asks for, including new columns they ask you to calculate (for example a ratio, a difference, a percentage or a total); the user's request overrides any default. Write it exactly like this example, with the alignment row only as the second line and never inside a cell:\n\n| Store | Units sold | Revenue ($) |\n|:---|---:|---:|\n| Seattle | 25349 | 1726491.36 |\n\nShow at most 10 rows and give the count for the rest. Do not put a table inside a bullet point, and do not describe a table in words as well.
 - Write for a busy inventory or store manager, not a data analyst. After the Scope line, lead with one or two plain-English sentences: what is happening, why it matters and what to do about it. Then give the evidence under readable labels such as "units sold" or "months of stock" instead of field names such as units_change_pct or covers_all_stores. Keep every figure exact, and keep the caveats and the draft recommendations. Do not name tools in the answer. Never write internal field names or IDs, such as covers_all_stores, clearance_guard, peak_is_near or product_id: say "all 8 stores" or "the seasonal peak is near" instead, and give products by name only.
 - Downloads: when the user asks for a file, download, export, CSV, Excel or PDF of results, first get the figures with your data tools, then call make_export with every row you have (up to 1000) and put the markdown link line it returns in your answer, after a one-line summary. You cannot email or attach files, so never promise to; the link is the download. Say in one line what the file contains.
 - Charts: when the user asks for a chart, graph or histogram, first get the figures with your data tools, then call make_chart using only those returned figures, and put the markdown image line it returns in your answer. Use a bar chart to compare stores, categories or products, a line chart for change over time, and a histogram for how values are spread. For a histogram of daily or per-order figures, query the individual figures first. If the chart fails, say so in one sentence and answer in words.
@@ -420,19 +484,19 @@ CLOSING_QUESTION_PROBLEM = (
 )
 
 
-OFFER = re.compile(r"(?i)\b(pick one|choose one|would you like|do you want|want me to|should i|if you want|if you'd like)\b")
-ASSISTANT_OFFER = re.compile(r"(?i)\bI (can|could|will|'ll)\b")
+OFFER = re.compile(r"(?i)\b(pick one|choose one|would you like|do you want|want me to|should i|if you want|if you['\u2019]d like|tell me which)\b")
+ASSISTANT_OFFER = re.compile(r"(?i)\bI (can|could|will|['\u2019]ll)\b")
 
 
 def closing_question(answer: str, used_tools: bool) -> list[str]:
-    """A data answer must not end by handing the work back to the user."""
-    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", answer.strip()) if p.strip()]
-    if not used_tools or not paragraphs:
+    """A data answer must not end by handing the work back to the user: report what without_closing_offer would remove."""
+    if not used_tools or not answer.strip():
         return []
-    last = paragraphs[-1]
-    return [CLOSING_QUESTION_PROBLEM] if last.endswith("?") or OFFER.search(last) else []
+    lines = [ln for ln in answer.strip().splitlines() if ln.strip()]
+    return [CLOSING_QUESTION_PROBLEM] if _strip_offer(answer) != answer.strip() or lines[-1].strip().endswith("?") else []
 
 
+BROAD_SCOPE = re.compile(r"(?i)\b(all|every|each|other|the other|rest of the)\s+(the\s+)?stores?\b|\bnetwork\b|\bcompany(-wide)?\b|\bnational\b")
 CANNOT_SEE = re.compile(r"(?i)\b(cannot|can't|can not|unable|not able|only see|not visible|no access|outside|don't have access)\b")
 
 
@@ -442,6 +506,11 @@ def scope_problem(message: str, identity: str | None, answer: str) -> list[str]:
         return []
     own = next((name for name, rls in STORE_RLS_IDS.items() if rls == identity), None)
     problems = []
+    if BROAD_SCOPE.search(message) and not CANNOT_SEE.search(answer):
+        problems.append(
+            "The user asked for every store, the network or the company, which this user cannot see. Begin the answer by saying plainly "
+            "that you can see only their own store and cannot list or compare the others, then give what you can see for their store."
+        )
     for name in STORE_RLS_IDS:
         short = name.replace("Zava Retail ", "")
         if name != own and re.search(rf"(?i)\b{re.escape(short)}\b", message) and not (re.search(rf"(?i)\b{re.escape(short)}\b", answer) and CANNOT_SEE.search(answer)):
@@ -452,23 +521,64 @@ def scope_problem(message: str, identity: str | None, answer: str) -> list[str]:
     return problems
 
 
+_TABLE_LINE = re.compile(r"^\s*\|.*\|\s*$")
+_SEPARATOR = re.compile(r"^\s*\|?(\s*:?-{3,}:?\s*\|)+\s*$")
+
+
+def repair_tables(answer: str) -> str:
+    """Fix markup slips in tables: alignment markers copied into cells and a missing header separator row."""
+    lines, out, i = answer.split("\n"), [], 0
+    while i < len(lines):
+        if not _TABLE_LINE.match(lines[i]):
+            out.append(lines[i])
+            i += 1
+            continue
+        j = i
+        while j < len(lines) and _TABLE_LINE.match(lines[j]):
+            j += 1
+        block = lines[i:j]
+        header, rest = block[0], block[1:]
+        columns = max(1, len(header.strip().strip("|").split("|")))
+        if rest and _SEPARATOR.match(rest[0]):
+            separator, rest = rest[0], rest[1:]
+        else:
+            separator = "|" + "|".join(["---"] * columns) + "|"
+        clean = lambda ln: re.sub(r"\s*:?-{3,}:?(?=\s*\|)", "", ln)  # noqa: E731 - "Seattle ---:" becomes "Seattle"
+        out += [clean(header), separator, *[clean(r) for r in rest if not _SEPARATOR.match(r)]]
+        i = j
+    return "\n".join(out)
+
+
 def without_closing_offer(answer: str, used_tools: bool) -> str:
-    """Drop closing offers that hold no content. Never touches a line with a link or image, or one with figures."""
-    if not closing_question(answer, used_tools):
-        return answer
+    """Drop a closing offer, with the options listed under it. Never touches a link, an image or a finding."""
+    return _strip_offer(answer) if used_tools else answer
+
+
+def _strip_offer(answer: str) -> str:
 
     def is_offer(line: str) -> bool:
         text = line.strip()
-        asks = bool(OFFER.search(text)) or text.endswith("?") or bool(re.match(r"[\-*\d.)\s]*I (can|could|will|'ll)\b", text))
+        asks = bool(OFFER.search(text)) or text.endswith("?") or bool(re.match(r"[\-*\d.)\s]*I (can|could|will|['\u2019]ll)\b", text))
         return asks and "](/" not in text and len(text) <= 600 and (not re.search(r"\d", text) or bool(ASSISTANT_OFFER.search(text)))
 
-    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", answer.strip()) if p.strip()]
-    last = paragraphs[-1]
-    if len(paragraphs) > 1 and "](/" not in last and is_offer(last.splitlines()[0]) and not re.search(r"\d", last):
-        paragraphs.pop()  # an offer followed by its options
-    lines = "\n\n".join(paragraphs).split("\n")
-    while len([ln for ln in lines if ln.strip()]) > 1 and (not lines[-1].strip() or is_offer(lines[-1])):
-        lines.pop()
+    def is_header(line: str) -> bool:
+        text = line.strip()
+        return (bool(OFFER.search(text)) or bool(ASSISTANT_OFFER.search(text))) and text.endswith((":", "?")) and "](/" not in text
+
+    lines = answer.strip().split("\n")
+    for _ in range(4):  # a closing question, then the offer block above it, then a sentence before that
+        before = len(lines)
+        while len([ln for ln in lines if ln.strip()]) > 1 and (not lines[-1].strip() or is_offer(lines[-1])):
+            lines.pop()
+        for i in range(max(0, len(lines) - 14), len(lines)):  # an offer block is short and last
+            block = lines[i:]
+            if any(ln.strip() for ln in lines[:i]) and is_header(lines[i]) and "](/" not in "\n".join(block) and len("\n".join(block)) <= 900 and all(
+                not ln.strip() or re.match(r"\s*([-*]|\d+[.)])\s", ln) for ln in block[1:]
+            ):
+                lines = lines[:i]
+                break
+        if len(lines) == before:
+            break
     return "\n".join(lines).rstrip()
 
 
@@ -496,7 +606,7 @@ async def run_turn(
     if not tools:
         yield {"error": "No MCP tools are available. Check /health for the server status."}
         return
-    tools = [*tools, CHART_TOOL, EXPORT_TOOL]
+    tools = [*tools, CHART_TOOL, EXPORT_TOOL, CALC_TOOL]
     history = sessions.setdefault(session_id, [])
     evidence = evidence_store.setdefault(session_id, [])
     revisions = 0
@@ -531,7 +641,7 @@ async def run_turn(
         calls = [c for c in (reply.tool_calls or []) if c.type == "function"]
 
         if not calls:
-            answer = without_closing_offer(reply.content or "", tool_count > 0)
+            answer = repair_tables(without_closing_offer(reply.content or "", tool_count > 0))
             problems = verify_answer(answer, [*evidence, message]).problems + scope_problem(message, identity, answer)
             if problems and revisions < MAX_REVISIONS:
                 revisions += 1
@@ -582,6 +692,12 @@ async def run_turn(
             started = time.perf_counter()
             if call.function.name == CHART_TOOL_NAME:
                 text = await make_chart_result(call.function.arguments, evidence, message)
+                try:
+                    arguments = json.loads(call.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    pass
+            elif call.function.name == CALC_TOOL_NAME:
+                text = calculate_result(call.function.arguments, evidence, message)
                 try:
                     arguments = json.loads(call.function.arguments or "{}")
                 except json.JSONDecodeError:

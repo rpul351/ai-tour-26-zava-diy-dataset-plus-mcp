@@ -206,6 +206,20 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
             self.assertLess(time.perf_counter() - started, 10, f"store {store_id}")
             self.assertEqual(out["row_count"], 20)
 
+    async def test_sku_filter_limits_both_tools_to_exactly_those_products(self):
+        skus = ["PFEP000010", "pfep000008"]
+        names = {r["product_name"] for r in await sql_rows(GLOBAL, "SELECT product_name FROM retail.products WHERE UPPER(sku) = ANY($1::text[])", [x.upper() for x in skus])}
+        cover = await self.call("stock_cover_ranking", GLOBAL, skus=skus, top_n=10)
+        self.assertEqual({r["product_name"] for r in cover["results"]}, names)
+        self.assertEqual(cover["summary"]["rows_in_scope"], len(names))
+        pairs = await self.call("frequently_bought_together", GLOBAL, skus=skus, min_orders=1, top_n=5)
+        self.assertGreater(pairs["row_count"], 0)
+        for r in pairs["results"]:
+            self.assertTrue(r["name_a"] in names or r["name_b"] in names, r)
+        self.assertIn("None of these SKUs", (await self.call("frequently_bought_together", GLOBAL, skus=["NOPE"]))["message"])
+        own = await self.call("stock_cover_ranking", KIRKLAND, skus=skus, top_n=10)
+        self.assertEqual(own["scope"]["stores_included"], ["Zava Retail Kirkland"])
+
     async def test_new_tools_reject_bad_values_in_plain_words(self):
         self.assertIn("season", (await self.call("frequently_bought_together", GLOBAL, season="monsoon"))["error"])
         self.assertIn("by must", (await self.call("stock_cover_ranking", GLOBAL, by="shelf"))["error"])
