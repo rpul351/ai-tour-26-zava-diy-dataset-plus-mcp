@@ -338,6 +338,19 @@ def rate_limit_wait(session_id: str) -> int:
     return 0
 
 
+async def probe_semantic_search(call) -> str:
+    """Ask semantic search for a hammer once at start-up. Vector search over an empty or missing embedding setup returns nothing quietly."""
+    try:
+        text = await asyncio.wait_for(call({"query_description": "hammer", "max_rows": 1, "similarity_threshold": 20}), 30)
+    except Exception as exc:  # noqa: BLE001 - any failure is a health finding
+        return f"failed ({type(exc).__name__})"
+    if '"product_name"' in text:
+        return "ok"
+    if text.startswith("Tool error") or "Error:" in text[:80]:
+        return "failed: " + text[:120].replace("\n", " ")
+    return "returns nothing: check the embedding model deployment (infra/deploy.sh) before the code"
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     credential = DefaultAzureCredential()
@@ -348,6 +361,7 @@ async def lifespan(app: FastAPI):
     app.state.server_status = {}
     app.state.pools = {}
     app.state.pool_lock = asyncio.Lock()
+    app.state.semantic_status = "not checked (no identity started yet)"
     if AZURE_OPENAI_ENDPOINT:
         token_provider = get_bearer_token_provider(credential, "https://cognitiveservices.azure.com/.default")
         app.state.openai = AsyncAzureOpenAI(
@@ -363,6 +377,14 @@ async def lifespan(app: FastAPI):
         if RLS_USER_ID:
             default = await get_pool(app, RLS_USER_ID)
             app.state.tools, app.state.tool_owners, app.state.server_status = default.tools, default.owners, default.status
+            semantic = default.owners.get("semantic_search_products")
+            if semantic is not None:
+                async def search(arguments: dict) -> str:
+                    return tool_result_text(await semantic.call_tool("semantic_search_products", arguments))
+
+                app.state.semantic_status = await probe_semantic_search(search)
+            else:
+                app.state.semantic_status = "not available (server not connected)"
         yield
     finally:
         for pool in app.state.pools.values():
@@ -799,6 +821,8 @@ async def health() -> JSONResponse:
     servers = app.state.server_status
     failed = [name for name, status in servers.items() if status.startswith("failed")]
     problems += [f"MCP server {name} {servers[name]}" for name in failed]
+    if not app.state.semantic_status.startswith(("ok", "not checked")):
+        problems.append(f"Semantic search {app.state.semantic_status}")
     usable = (bool(app.state.tools) or ACCESS_LIST is not None) and not config_problems()
     status = "healthy" if not problems else ("degraded" if usable else "misconfigured")
     body = {
@@ -807,6 +831,7 @@ async def health() -> JSONResponse:
         "prompt_version": PROMPT_VERSION,
         "mcp_servers": servers,
         "tool_count": len(app.state.tools),
+        "semantic_search": app.state.semantic_status,
         "access_list_users": len(ACCESS_LIST.users) if ACCESS_LIST else None,
         "identities_running": len(app.state.pools),
         "problems": problems,

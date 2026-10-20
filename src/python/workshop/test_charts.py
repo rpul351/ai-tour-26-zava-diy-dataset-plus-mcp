@@ -191,6 +191,20 @@ def test_calculate_reports_division_by_zero_in_that_row_only():
     assert out["calculations"][0]["error"] == "division by zero" and out["calculations"][1]["result"] == "-788.00"
 
 
+def test_the_semantic_search_probe_tells_ok_from_empty_from_failed():
+    async def result(text=None, raises=False):
+        async def call(arguments):
+            if raises:
+                raise RuntimeError("down")
+            return text
+        return await agent_service.probe_semantic_search(call)
+
+    assert asyncio.run(result('Semantic Search Results:\n{"results": [{"product_name": "Ball Peen Hammer"}]}')) == "ok"
+    assert "embedding model deployment" in asyncio.run(result('Semantic Search Results:\n{"results": [], "row_count": 0}'))
+    assert asyncio.run(result("Error: Semantic search is not available. Azure OpenAI endpoint not configured.")).startswith("failed:")
+    assert asyncio.run(result(raises=True)).startswith("failed (RuntimeError)")
+
+
 if __name__ == "__main__":
     tests = [fn for name, fn in sorted(globals().items()) if name.startswith("test_")]
     for fn in tests:
