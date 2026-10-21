@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Annotated, List, Optional
+from typing import Annotated, List, Literal, Optional
 
 from mcp.server.fastmcp import Context, FastMCP
 from pydantic import Field
@@ -251,9 +251,13 @@ async def recommend_inventory_transfers(
 @mcp.tool()
 async def rank_capital_tied_up(
     ctx: Context,
+    store_name: Annotated[
+        Optional[str],
+        Field(description="Optional store name such as 'Seattle' or 'Zava Retail Seattle'. Always use this to pick a store; never guess a store_id."),
+    ] = None,
     store_id: Annotated[
         Optional[int],
-        Field(description="Optional store ID to rank a single store. Leave empty for every store the current user can see."),
+        Field(description="Do not guess it; use store_name. Optional store ID to rank a single store. Leave empty for every store the current user can see."),
     ] = None,
     window_days: Annotated[
         int,
@@ -281,6 +285,7 @@ async def rank_capital_tied_up(
     return await provider.rank_capital_tied_up(
         rls_user_id=rls_user_id,
         store_id=store_id,
+        store_name=store_name,
         window_days=window_days,
         target_months_cover=target_months_cover,
         top_n=top_n,
@@ -323,9 +328,13 @@ async def seasonal_baseline_check(
         str,
         Field(description="Category name, for example 'GARDEN & OUTDOOR'. An unknown name returns the valid list."),
     ],
+    store_name: Annotated[
+        Optional[str],
+        Field(description="Optional store name such as 'Seattle' or 'Zava Retail Seattle'. Always use this to pick a store; never guess a store_id."),
+    ] = None,
     store_id: Annotated[
         Optional[int],
-        Field(description="Optional store ID. Leave empty for every store the current user can see."),
+        Field(description="Do not guess it; use store_name. Optional store ID. Leave empty for every store the current user can see."),
     ] = None,
     recent_months: Annotated[
         int,
@@ -344,6 +353,7 @@ async def seasonal_baseline_check(
         rls_user_id=rls_user_id,
         category_name=category_name,
         store_id=store_id,
+        store_name=store_name,
         recent_months=recent_months,
     )
 
@@ -402,9 +412,13 @@ async def store_seasonal_alignment(
 @mcp.tool()
 async def stock_cover_ranking(
     ctx: Context,
+    store_name: Annotated[
+        Optional[str],
+        Field(description="Optional store name such as 'Seattle' or 'Zava Retail Seattle'. Always use this to pick a store; never guess a store_id."),
+    ] = None,
     store_id: Annotated[
         Optional[int],
-        Field(description="Optional store ID. Leave empty for every store the current user can see."),
+        Field(description="Do not guess it; use store_name. Optional store ID. Leave empty for every store the current user can see."),
     ] = None,
     category_name: Annotated[
         Optional[str],
@@ -443,6 +457,7 @@ async def stock_cover_ranking(
     return await provider.stock_cover_ranking(
         rls_user_id=rls_user_id,
         store_id=store_id,
+        store_name=store_name,
         category_name=category_name,
         by=by,
         min_months_cover=min_months_cover,
@@ -455,9 +470,13 @@ async def stock_cover_ranking(
 @mcp.tool()
 async def frequently_bought_together(
     ctx: Context,
+    store_name: Annotated[
+        Optional[str],
+        Field(description="Optional store name such as 'Seattle' or 'Zava Retail Seattle'. Always use this to pick a store; never guess a store_id."),
+    ] = None,
     store_id: Annotated[
         Optional[int],
-        Field(description="Optional store ID. Leave empty for every store the current user can see."),
+        Field(description="Do not guess it; use store_name. Optional store ID. Leave empty for every store the current user can see."),
     ] = None,
     category_name: Annotated[
         Optional[str],
@@ -496,12 +515,70 @@ async def frequently_bought_together(
     return await provider.frequently_bought_together(
         rls_user_id=rls_user_id,
         store_id=store_id,
+        store_name=store_name,
         category_name=category_name,
         season=season,
         year=year,
         min_orders=min_orders,
         top_n=top_n,
         skus=skus,
+    )
+
+
+@mcp.tool()
+async def product_sales(
+    ctx: Context,
+    period: Annotated[
+        Literal["today", "yesterday", "last_7_days", "last_30_days", "last_90_days", "last_12_months", "this_week", "last_week",
+                "this_month", "last_month", "this_quarter", "last_quarter", "this_season", "last_season", "this_year", "last_year", "custom"],
+        Field(description="The period to measure, resolved to exact dates by this tool. 'this_month' and 'this_season' run from their first day to today. Seasons: winter Dec-Feb, spring Mar-May, summer Jun-Aug, autumn Sep-Nov. Use 'custom' with start_date and end_date."),
+    ] = "last_12_months",
+    compare: Annotated[
+        Literal["none", "previous_period", "same_period_last_year"],
+        Field(description="Compare with another window of the same length (a period still running is compared with the same elapsed days of the previous one). Needed for rises and falls."),
+    ] = "none",
+    start_date: Annotated[Optional[str], Field(description="ISO date, only with period 'custom'.")] = None,
+    end_date: Annotated[Optional[str], Field(description="ISO date, only with period 'custom'.")] = None,
+    store_name: Annotated[Optional[str], Field(description="Optional store name such as 'Seattle' or 'Zava Retail Seattle'. Prefer this to store_id. Leave empty for every store the user can see.")] = None,
+    store_id: Annotated[Optional[int], Field(description="Optional store ID. Do not guess it; use store_name.")] = None,
+    category_name: Annotated[Optional[str], Field(description="Optional category name.")] = None,
+    skus: Annotated[
+        Optional[List[str]],
+        Field(description="Optional product SKUs. Use this to ask how particular products are doing; products with no sales are then shown with 0.", max_length=50),
+    ] = None,
+    metric: Annotated[
+        Literal["units", "revenue"],
+        Field(description="What to rank by. Use 'units' unless the user says revenue, money, value or dollars. Both are always returned."),
+    ] = "units",
+    rank: Annotated[
+        Literal["top", "bottom", "biggest_drop", "biggest_gain"],
+        Field(description="top and bottom rank by the metric in the period. biggest_drop and biggest_gain rank the change against the comparison window (worst performing = biggest_drop)."),
+    ] = "top",
+    top_n: Annotated[int, Field(description="Number of products to return. At most 50.", ge=1, le=50)] = 10,
+) -> str:
+    """Rank products by what they sold in a period: best sellers, slow sellers, biggest risers and fallers, or how named products are doing.
+
+    Use this for every question about which products sold most, least, best, worst, latest or changed, and for how a product is
+    performing. It resolves words like 'this month' to exact dates, always returns units and revenue, states which window it used,
+    and gives the same list for the same question. Say which metric and window you used in one line. Use per-day figures when two
+    windows differ in length. To list individual recent order lines, use execute_sales_query.
+    The result includes a scope field naming the stores covered. It honors the current RLS user context.
+    """
+    rls_user_id = get_rls_user_id(ctx)
+    provider = get_db_provider()
+    return await provider.product_sales(
+        rls_user_id=rls_user_id,
+        period=period,
+        compare=compare,
+        start_date=start_date,
+        end_date=end_date,
+        store_id=store_id,
+        category_name=category_name,
+        skus=skus,
+        metric=metric,
+        rank=rank,
+        top_n=top_n,
+        store_name=store_name,
     )
 
 

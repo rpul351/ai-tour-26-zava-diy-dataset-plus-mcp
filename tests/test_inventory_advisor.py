@@ -36,6 +36,7 @@ from sales_analysis_postgres import PostgreSQLSchemaProvider  # noqa: E402
 DB_URL = os.getenv("POSTGRES_URL", "postgresql://store_manager:StoreManager123!@db:5432/zava")
 GLOBAL = "00000000-0000-0000-0000-000000000000"
 KIRKLAND = "9c8b7a65-4321-fed0-9876-543210fedcba"
+SEATTLE = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
 UNKNOWN = "11111111-1111-1111-1111-111111111111"
 TEST_MCP_PORT = 8011
 RUN_AGENT_TESTS = os.getenv("RUN_AGENT_TESTS") == "1"
@@ -219,6 +220,93 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("None of these SKUs", (await self.call("frequently_bought_together", GLOBAL, skus=["NOPE"]))["message"])
         own = await self.call("stock_cover_ranking", KIRKLAND, skus=skus, top_n=10)
         self.assertEqual(own["scope"]["stores_included"], ["Zava Retail Kirkland"])
+
+    async def test_product_sales_matches_independent_sql_and_is_repeatable(self):
+        out = await self.call("product_sales", GLOBAL, period="last_12_months", metric="units", top_n=5)
+        rows = await sql_rows(
+            GLOBAL,
+            "SELECT p.product_name, SUM(oi.quantity) u, SUM(oi.total_amount) r FROM retail.order_items oi JOIN retail.orders o USING (order_id) "
+            "JOIN retail.products p ON p.product_id = oi.product_id WHERE o.order_date BETWEEN CURRENT_DATE - 364 AND CURRENT_DATE "
+            "GROUP BY p.product_id, p.product_name ORDER BY u DESC, p.product_name, p.sku LIMIT 5",
+        )
+        self.assertEqual([(r["product_name"], r["units"]) for r in out["results"]], [(r["product_name"], int(r["u"])) for r in rows])
+        self.assertAlmostEqual(out["results"][0]["revenue"], float(rows[0]["r"]), places=2)
+        self.assertEqual(out["window"]["days"], 365)
+        again = await self.call("product_sales", GLOBAL, period="last_12_months", metric="units", top_n=5)
+        self.assertEqual(out, again)
+
+    async def test_product_sales_compares_windows_of_equal_length_and_ranks_the_fall(self):
+        seattle = (await sql_rows(GLOBAL, "SELECT store_id FROM retail.stores WHERE store_name = 'Zava Retail Seattle'"))[0]["store_id"]
+        out = await self.call("product_sales", GLOBAL, period="this_season", compare="same_period_last_year", store_id=seattle, rank="biggest_drop", top_n=5)
+        self.assertEqual(out["window"]["days"], out["compared_with"]["days"])
+        changes = [r["change_units"] for r in out["results"]]
+        self.assertEqual(changes, sorted(changes))
+        for r in out["results"]:
+            self.assertEqual(r["change_units"], r["units"] - r["previous_units"])
+        top = out["results"][0]
+        check = await sql_rows(
+            GLOBAL,
+            "SELECT COALESCE(SUM(oi.quantity) FILTER (WHERE o.order_date BETWEEN $2::date AND $3::date), 0) cur, "
+            "COALESCE(SUM(oi.quantity) FILTER (WHERE o.order_date BETWEEN $4::date AND $5::date), 0) prev FROM retail.order_items oi "
+            "JOIN retail.orders o USING (order_id) JOIN retail.products p ON p.product_id = oi.product_id WHERE p.sku = $1 AND oi.store_id = $6",
+            top["sku"], date.fromisoformat(out["window"]["start"]), date.fromisoformat(out["window"]["end"]),
+            date.fromisoformat(out["compared_with"]["start"]), date.fromisoformat(out["compared_with"]["end"]), seattle,
+        )
+        self.assertEqual((top["units"], top["previous_units"]), (int(check[0]["cur"]), int(check[0]["prev"])))
+
+    async def test_product_sales_by_sku_shows_a_product_with_no_sales_and_respects_scope(self):
+        out = await self.call("product_sales", GLOBAL, period="this_month", compare="previous_period", skus=["lbmld005"])
+        self.assertEqual([r["sku"] for r in out["results"]], ["LBMLD005"])
+        own = await self.call("product_sales", KIRKLAND, period="last_12_months", top_n=3)
+        self.assertEqual(own["scope"]["stores_included"], ["Zava Retail Kirkland"])
+        self.assertIn("period must be one of", (await self.call("product_sales", GLOBAL, period="next_month"))["error"])
+        self.assertIn("metric must be", (await self.call("product_sales", GLOBAL, metric="profit"))["error"])
+
+    async def test_two_products_that_share_a_name_are_kept_apart(self):
+        out = await self.call("product_sales", GLOBAL, period="last_12_months", skus=["LBOSB001", "LBPLY004"])
+        self.assertEqual(len(out["results"]), 2)
+        self.assertEqual({r["sku"] for r in out["results"]}, {"LBOSB001", "LBPLY004"})
+        self.assertTrue(all(r["name_is_shared_with_another_product"] for r in out["results"]))
+
+    async def test_product_sales_takes_a_store_name_and_never_turns_a_wrong_store_into_zeros(self):
+        by_name = await self.call("product_sales", GLOBAL, period="last_12_months", store_name="seattle", top_n=3)
+        self.assertEqual(by_name["scope"]["stores_included"], ["Zava Retail Seattle"])
+        by_id = await self.call("product_sales", GLOBAL, period="last_12_months", store_id=1, top_n=3)
+        self.assertEqual(by_name["results"], by_id["results"])
+        self.assertIn("No store named", (await self.call("product_sales", GLOBAL, store_name="Atlantis"))["message"])
+        wrong = await self.call("product_sales", SEATTLE, period="last_12_months", store_id=6, top_n=3)  # a guessed id
+        self.assertEqual(wrong["results"], [])
+        self.assertIn("not visible", wrong["message"])
+        self.assertIn("Zava Retail Seattle", wrong["message"])
+        own = await self.call("product_sales", SEATTLE, period="last_12_months", store_name="Seattle", top_n=3)
+        self.assertGreater(own["results"][0]["units"], 0)
+        other = await self.call("product_sales", SEATTLE, period="last_12_months", store_name="Kirkland")
+        self.assertEqual(other["results"], [])
+        self.assertIn("No store named", other["message"])
+        self.assertNotIn("Kirkland", other["message"].split("Visible stores:")[-1])
+
+    async def test_every_store_tool_takes_a_store_name_and_agrees_with_the_store_id(self):
+        seattle = (await sql_rows(GLOBAL, "SELECT store_id FROM retail.stores WHERE store_name = 'Zava Retail Seattle'"))[0]["store_id"]
+        for tool, args in (
+            ("frequently_bought_together", {"top_n": 3}),
+            ("stock_cover_ranking", {"top_n": 3}),
+            ("rank_capital_tied_up", {"top_n": 3}),
+        ):
+            by_name = await self.call(tool, GLOBAL, store_name="seattle", **args)
+            by_id = await self.call(tool, GLOBAL, store_id=seattle, **args)
+            self.assertEqual(by_name["scope"]["stores_included"], ["Zava Retail Seattle"], tool)
+            self.assertEqual(by_name["results"], by_id["results"], tool)
+        season = await self.call("seasonal_baseline_check", GLOBAL, category_name="HARDWARE", store_name="Seattle")
+        self.assertEqual(season["scope"]["stores_included"], ["Zava Retail Seattle"])
+        self.assertIn("No store named", (await self.call("frequently_bought_together", GLOBAL, store_name="Atlantis"))["message"])
+        # An id the user cannot see is refused in words, never swapped for their own store: a Seattle manager who guesses an id
+        # must not get Seattle's figures presented as the answer for another store. The message names the visible stores.
+        wrong = await self.call("stock_cover_ranking", SEATTLE, store_id=6, top_n=2)
+        self.assertEqual(wrong["results"], [])
+        self.assertIn("not visible", wrong["message"])
+        self.assertIn("Zava Retail Seattle", wrong["message"])
+        again = await self.call("stock_cover_ranking", SEATTLE, store_name="Seattle", top_n=2)  # the retry the message asks for
+        self.assertGreater(len(again["results"]), 0)
 
     async def test_new_tools_reject_bad_values_in_plain_words(self):
         self.assertIn("season", (await self.call("frequently_bought_together", GLOBAL, season="monsoon"))["error"])

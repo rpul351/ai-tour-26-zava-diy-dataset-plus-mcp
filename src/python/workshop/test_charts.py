@@ -205,6 +205,31 @@ def test_the_semantic_search_probe_tells_ok_from_empty_from_failed():
     assert asyncio.run(result(raises=True)).startswith("failed (RuntimeError)")
 
 
+def test_a_finding_and_an_offer_in_one_line_keeps_the_finding():
+    answer = "Scope: all 8 stores\n\nThe total excess is 190,845,866 dollars at cost. If you want, I can break it down by store."
+    assert agent_service.without_closing_offer(answer, True) == "Scope: all 8 stores\n\nThe total excess is 190,845,866 dollars at cost."
+    bullet = "Body.\n\n- Hold orders for the 4 power tools. I can also export the 424 rows to CSV."
+    assert agent_service.without_closing_offer(bullet, True) == "Body.\n\n- Hold orders for the 4 power tools."
+
+
+def test_an_answer_is_never_reduced_to_its_scope_line():
+    only = "Scope: all 8 stores\n\nIf you want, I can give the total; tell me which store."
+    assert agent_service.without_closing_offer(only, True) == only.strip()
+
+
+NOT_VISIBLE = '{"scope": {"stores_included": [], "store_count": 0}, "results": [], "row_count": 0}'
+VISIBLE = '{"scope": {"stores_included": ["Zava Retail Seattle"], "store_count": 1}, "results": [{"units": 4}], "row_count": 1}'
+
+
+def test_zeros_from_a_store_the_tool_could_not_see_are_not_accepted_as_data():
+    answer = "Scope: Seattle\n\nWindow Casing Set sold 0 units this month and 0 in the previous period."
+    assert agent_service.empty_scope_problem([NOT_VISIBLE], answer)
+    assert not agent_service.empty_scope_problem([NOT_VISIBLE, VISIBLE], answer)  # a later good result recovers
+    assert not agent_service.empty_scope_problem([NOT_VISIBLE], "I cannot see that store, so I have no sales figures for it.")
+    assert not agent_service.empty_scope_problem([VISIBLE], answer)
+    assert agent_service.empty_scope_problem(['{"message": "No store named \'Atlantis\' is visible to this user."}'], answer)
+
+
 if __name__ == "__main__":
     tests = [fn for name, fn in sorted(globals().items()) if name.startswith("test_")]
     for fn in tests:
