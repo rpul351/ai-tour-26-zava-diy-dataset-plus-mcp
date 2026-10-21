@@ -13,18 +13,18 @@ import statistics
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
-from tests.test_inventory_advisor import GLOBAL, KIRKLAND, ROOT, expected_top_excess, sql_rows
+from tests.test_inventory_advisor import GLOBAL, KIRKLAND, ROOT, SEATTLE, expected_top_excess, sql_rows
 
 sys.path.insert(0, str(ROOT / "src" / "python" / "workshop"))
 import agent_service as svc  # noqa: E402
 import charts  # noqa: E402
 import exports  # noqa: E402
 
-IDENTITIES = {"global": GLOBAL, "kirkland": KIRKLAND}
+IDENTITIES = {"global": GLOBAL, "kirkland": KIRKLAND, "seattle": SEATTLE}
 CONCURRENCY = 3
 # gpt-5-mini list price in USD per 1M tokens (developers.openai.com model page, checked 2026-10-13). Azure pricing may differ.
 PRICE_INPUT_PER_M = 0.25
@@ -148,7 +148,37 @@ async def team_ground_truth() -> dict:
         "JOIN retail.stores s ON s.store_id = oi.store_id WHERE EXTRACT(YEAR FROM o.order_date) = 2023 GROUP BY 1",
     )
     revenue_per_unit = {r["store_name"]: f"{float(r['r']) / float(r['u']):.2f}" for r in per_store}
+    seattle_id = (await sql_rows(GLOBAL, "SELECT store_id FROM retail.stores WHERE store_name = 'Zava Retail Seattle'"))[0]["store_id"]
+    today = (await sql_rows(GLOBAL, "SELECT CURRENT_DATE d"))[0]["d"]
+    month_start, days = today.replace(day=1), today.day
+    prev_start = (month_start - timedelta(days=1)).replace(day=1)
+    prev_end = prev_start + timedelta(days=days - 1)
+    falls = await sql_rows(
+        GLOBAL,
+        "SELECT p.sku, p.product_name, COALESCE(SUM(oi.quantity) FILTER (WHERE o.order_date BETWEEN $1 AND $2), 0) cur, "
+        "COALESCE(SUM(oi.quantity) FILTER (WHERE o.order_date BETWEEN $3 AND $4), 0) prev FROM retail.products p "
+        "JOIN retail.order_items oi ON oi.product_id = p.product_id AND oi.store_id = $5 JOIN retail.orders o ON o.order_id = oi.order_id "
+        "GROUP BY p.sku, p.product_name ORDER BY (COALESCE(SUM(oi.quantity) FILTER (WHERE o.order_date BETWEEN $1 AND $2), 0) - "
+        "COALESCE(SUM(oi.quantity) FILTER (WHERE o.order_date BETWEEN $3 AND $4), 0)) ASC, p.product_name, p.sku LIMIT 1",
+        month_start, today, prev_start, prev_end, seattle_id,
+    )
+    wcs = (await sql_rows(
+        GLOBAL,
+        "SELECT COALESCE(SUM(oi.quantity) FILTER (WHERE o.order_date BETWEEN $1 AND $2), 0) cur, "
+        "COALESCE(SUM(oi.quantity) FILTER (WHERE o.order_date BETWEEN $3 AND $4), 0) prev FROM retail.order_items oi "
+        "JOIN retail.orders o USING (order_id) JOIN retail.products p ON p.product_id = oi.product_id WHERE p.sku = 'LBMLD005' AND oi.store_id = $5",
+        month_start, today, prev_start, prev_end, seattle_id,
+    ))[0]
+    top_by_units = (await sql_rows(
+        GLOBAL,
+        "SELECT p.product_name FROM retail.order_items oi JOIN retail.orders o USING (order_id) JOIN retail.products p ON p.product_id = oi.product_id "
+        "WHERE o.order_date BETWEEN CURRENT_DATE - 364 AND CURRENT_DATE GROUP BY p.product_id, p.product_name ORDER BY SUM(oi.quantity) DESC, p.product_name, p.sku LIMIT 1",
+    ))[0]["product_name"]
     return {
+        "month_days": days,
+        "window_casing": (int(wcs["cur"]), int(wcs["prev"])),
+        "seattle_month_worst": (falls[0]["product_name"], falls[0]["sku"], int(falls[0]["cur"]), int(falls[0]["prev"])),
+        "top_by_units": top_by_units,
         "revenue_per_unit": revenue_per_unit,
         "cover_by_name": {name: c for c, name in cover if name in ("Weatherproof Box", "Weather Resistant Outlet")},
         "over5_count": len(over),
@@ -284,6 +314,23 @@ def build_cases(t: dict) -> list[Case]:
         Case("C3", "Combined", "global", "I need something to protect electrical connections outdoors. How many months of stock do we hold of those products?",
              "Finds the outdoor electrical products by meaning, then gives the months of cover for them that match independent SQL.",
              lambda a: scope(a) + no_offer(a) + collect((any(n in a and f"{v:.1f}" in a for n, v in t["cover_by_name"].items()), "no found product with its correct months of cover"))),
+        # Consistency (tester feedback: the same question gave different products and numbers). Rules fixed before the first run.
+        Case("K1", "Consistency", "global", "What are the top selling products?",
+             f"The top product by units over the last 12 months is {t['top_by_units']}, with metric and dates stated.",
+             lambda a: scope(a) + no_offer(a) + collect((t["top_by_units"] in a, "top product by units not named"), (bool(re.search(r"(?i)units", a)), "metric not stated"), (bool(re.search(r"20\d\d-\d\d-\d\d", a)), "dates not stated"))),
+        Case("K2", "Consistency", "seattle", "tell which product is performing worst in Seattle store this month",
+             f"{t['seattle_month_worst'][0]} (SKU {t['seattle_month_worst'][1]}), {t['seattle_month_worst'][2]} units against {t['seattle_month_worst'][3]}, over equal day ranges.",
+             lambda a: scope(a) + no_offer(a) + collect((t["seattle_month_worst"][0] in a, "worst product not named"), (str(t["seattle_month_worst"][3]) in a, "previous-window units"), (bool(re.search(rf"\b{t['month_days']}\b", a)), "window length in days not stated"))),
+        Case("K3", "Consistency", "seattle", "how \"windows casing set\" is doing in Seattle store in this month",
+             f"Real figures for Window Casing Set ({t['window_casing'][0]} this month against {t['window_casing'][1]} in the same days last month), never 'no data visible'.",
+             lambda a: scope(a) + collect(("Window Casing Set" in a, "product not named"), ("no data visible" not in a.lower() and "no stores listed" not in a.lower(), "claimed no data is visible"), (bool(re.search(rf"\b{t['window_casing'][1]}\b", a)), "previous-window figure missing"))),
+        # Greetings (tester feedback: saying hi got no hello). Rules fixed before the first run.
+        Case("G1", "Greeting", "global", "hi",
+             "A friendly hello that names the agent and says the user is a super manager who sees all 8 stores, with example questions, and never calls it outside scope.",
+             lambda a: collect((a.lower().startswith("hello"), "does not start with hello"), ("Zava Inventory Advisor" in a, "agent not named"), (bool(re.search(r"(?i)all (8|eight) stores", a)), "role and scope not stated"), (bool(re.search(r"(?i)outside what i do|only help", a)) is False, "treated the greeting as out of scope"), ("?" in a or "-" in a, "no example questions"))),
+        Case("G2", "Greeting", "kirkland", "Hello!",
+             "A friendly hello that says the user can see only Kirkland, not all stores.",
+             lambda a: collect((a.lower().startswith("hello"), "does not start with hello"), ("Kirkland" in a, "Kirkland not named"), (not re.search(r"(?i)all (8|eight) stores", a), "told a store manager they see all stores"))),
         *guard,
         *limits,
         # Charts (team report: no bar chart or histogram). Rules fixed before the first run of these cases.

@@ -28,12 +28,13 @@ def test_millions_match_within_displayed_precision():
     assert verify_answer("Scope: x\nExcess is $195M.", [EXCESS_RESULT]).unverified == ["$195M"]
 
 
-def test_names_codes_dates_and_small_numbers_are_ignored():
+def test_names_dates_and_small_numbers_are_ignored_and_codes_must_come_from_a_tool():
     answer = (
         "Scope: x\nSliding Miter Saw 12-inch, 50lb bag, 2x4x8 lumber, SKU ELJB000015, "
         "as of 2026-10-13, in 2023, top 3 of 8 stores, month 7."
     )
-    assert verify_answer(answer, [YEAR_RESULT]).problems == []
+    assert verify_answer(answer, [YEAR_RESULT, '{"sku": "ELJB000015"}']).problems == []  # the code came from a tool
+    assert any("ELJB000015" in p for p in verify_answer(answer, [YEAR_RESULT]).problems)  # an unreturned code is now a finding
 
 
 def test_calculation_result_is_not_checked_but_its_inputs_are():
@@ -167,6 +168,35 @@ def test_the_rounded_value_after_an_arrow_is_what_is_checked():
     ev = ["revenue 83369.67 units 1171"]
     assert verify_answer("Scope: all\nMy calculation: 83369.67 / 1171 = 71.1955600352 -> 71.20", ev).problems == []
     assert verify_answer("Scope: all\nMy calculation: 83369.67 / 1171 = 71.1955600352 -> 72.00", ev).problems
+
+
+def test_a_small_whole_number_in_a_table_is_data_and_must_trace_to_a_tool_result():
+    ev = ['{"results": [{"sku": "A", "units": 13, "previous_units": 15}]}']
+    ok = "Scope: all\n\n| Product | Units | Previous |\n|:---|---:|---:|\n| A | 13 | 15 |\n"
+    assert verify_answer(ok, ev).problems == []
+    wrong = ok.replace("| 13 |", "| 47 |")
+    assert any("47" in p for p in verify_answer(wrong, ev).problems)
+    assert verify_answer("Scope: all\n\n| Rank | Product |\n|---:|:---|\n| 3 | A |\n", ev).problems == []  # ranks under 10 are not data
+
+
+def test_a_sku_no_tool_returned_is_flagged_and_a_returned_one_is_not():
+    ev = ['{"results": [{"product_name": "Digital Caliper 6-inch", "sku": "HTMT000017", "units": 2292}]}', "question: top sellers"]
+    ok = "Scope: all\n\n| Product | SKU | Units |\n|:---|:---|---:|\n| Digital Caliper 6-inch | HTMT000017 | 2292 |\n"
+    assert verify_answer(ok, ev).problems == []
+    bad = ok.replace("HTMT000017", "HTMT000099")
+    assert any("HTMT000099" in p for p in verify_answer(bad, ev).problems)
+
+
+def test_a_sku_the_user_typed_is_allowed_and_ordinary_words_are_not_mistaken_for_skus():
+    ev = ['{"results": []}', "how is LBMLD005 doing?"]
+    assert verify_answer("Scope: all\n\nNo sales for LBMLD005 this month, using HTTP2 and GPT4 style names is not a SKU.", ev).problems == []
+
+
+def test_a_decimal_multiplier_is_checked_but_dimensions_and_whole_multipliers_are_not():
+    ev = ['{"ratio": 2.57, "peak": 1.561, "quiet": 0.608}']
+    assert verify_answer("Scope: all\n\nPeak demand is about 2.57x the quiet month.", ev).problems == []
+    assert any("2.9" in p for p in verify_answer("Scope: all\n\nPeak demand is about 2.9x the quiet month.", ev).problems)
+    assert verify_answer("Scope: all\n\nUse 2x4x8 lumber, 12-inch brackets and a 3x gap.", ev).problems == []
 
 
 if __name__ == "__main__":

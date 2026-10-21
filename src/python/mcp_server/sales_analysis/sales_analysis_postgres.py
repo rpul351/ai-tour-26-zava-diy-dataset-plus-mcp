@@ -19,7 +19,7 @@ import asyncio
 import json
 import logging
 import os
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
@@ -48,6 +48,109 @@ STORES_TABLE = "stores"
 CATEGORIES_TABLE = "categories"
 PRODUCT_TYPES_TABLE = "product_types"
 INVENTORY_TABLE = "inventory"
+
+
+PERIODS = (
+    "today", "yesterday", "last_7_days", "last_30_days", "last_90_days", "last_12_months",
+    "this_week", "last_week", "this_month", "last_month", "this_quarter", "last_quarter",
+    "this_season", "last_season", "this_year", "last_year", "custom",
+)
+COMPARISONS = ("none", "previous_period", "same_period_last_year")
+
+
+def _add_months(d: date, months: int) -> date:
+    index = d.year * 12 + (d.month - 1) + months
+    year, month = divmod(index, 12)
+    month += 1
+    last = (date(year + (month == 12), month % 12 + 1, 1) - timedelta(days=1)).day
+    return date(year, month, min(d.day, last))
+
+
+def _month_end(d: date) -> date:
+    return date(d.year + (d.month == 12), d.month % 12 + 1, 1) - timedelta(days=1)
+
+
+def resolve_period(period: str, today: date, start_date: Optional[date] = None, end_date: Optional[date] = None,
+                   compare: str = "previous_period") -> Dict[str, Any]:
+    """Turn a period name into exact dates, and the window to compare it with.
+
+    A period that is still running (this month, this season) ends today and is compared with the same elapsed
+    span of the previous period, so the two windows hold the same number of days. A finished period is compared
+    with the whole previous period. Seasons are meteorological and northern hemisphere: winter is December to
+    February, spring March to May, summer June to August, autumn September to November.
+    """
+    if period not in PERIODS:
+        raise ValueError(f"period must be one of: {', '.join(PERIODS)}.")
+    if compare not in COMPARISONS:
+        raise ValueError(f"compare must be one of: {', '.join(COMPARISONS)}.")
+    unit = 0  # months in one calendar unit; 0 means a rolling window of days
+    partial = False
+    if period == "custom":
+        if start_date is None or end_date is None or start_date > end_date:
+            raise ValueError("period custom needs start_date and end_date, with start_date not after end_date.")
+        start, end = start_date, min(end_date, today)
+        if start > end:
+            raise ValueError("the period starts after today.")
+    elif period == "today":
+        start = end = today
+    elif period == "yesterday":
+        start = end = today - timedelta(days=1)
+    elif period in ("last_7_days", "last_30_days", "last_90_days", "last_12_months"):
+        days = {"last_7_days": 7, "last_30_days": 30, "last_90_days": 90, "last_12_months": 365}[period]
+        start, end = today - timedelta(days=days - 1), today
+    elif period in ("this_week", "last_week"):
+        monday = today - timedelta(days=today.weekday())
+        if period == "this_week":
+            start, end, partial = monday, today, True
+        else:
+            start, end = monday - timedelta(days=7), monday - timedelta(days=1)
+        unit = -7
+    else:
+        if period.endswith("month"):
+            unit, first = 1, date(today.year, today.month, 1)
+        elif period.endswith("quarter"):
+            unit, first = 3, date(today.year, 3 * ((today.month - 1) // 3) + 1, 1)
+        elif period.endswith("season"):
+            unit = 3
+            first = date(today.year, today.month, 1)
+            while first.month not in (12, 3, 6, 9):
+                first = _add_months(first, -1)
+        else:
+            unit, first = 12, date(today.year, 1, 1)
+        if period.startswith("this_"):
+            start, end, partial = first, today, True
+        else:
+            start = _add_months(first, -unit)
+            end = first - timedelta(days=1)
+
+    days = (end - start).days + 1
+    window = {"label": period, "start": start, "end": end, "days": days}
+    result: Dict[str, Any] = {"window": window, "compare": None, "notes": []}
+    if compare == "none":
+        return result
+    if compare == "same_period_last_year":
+        c_start, c_end = _add_months(start, -12), _add_months(end, -12)
+        if (c_end - c_start).days + 1 != days:  # a 29 February in the range
+            c_end = c_start + timedelta(days=days - 1)
+        label = "same period last year"
+    elif unit == 0 or period == "custom":
+        c_end = start - timedelta(days=1)
+        c_start = c_end - timedelta(days=days - 1)
+        label = f"the {days} days before"
+    elif unit == -7:
+        c_start = start - timedelta(days=7)
+        c_end = c_start + timedelta(days=days - 1)
+        label = "previous week" + (" (same days)" if partial else "")
+    else:
+        c_start = _add_months(start, -unit)
+        unit_end = _month_end(_add_months(c_start, unit - 1))
+        c_end = min(c_start + timedelta(days=days - 1), unit_end) if partial else unit_end
+        label = "previous " + ("month" if unit == 1 else "quarter" if period.endswith("quarter") else "season" if period.endswith("season") else "year")
+        label += " (same elapsed days)" if partial else ""
+        if partial and c_end - c_start != end - start:
+            result["notes"].append("The previous period is shorter, so its window is shorter too. Compare per-day rates.")
+    result["compare"] = {"label": label, "start": c_start, "end": c_end, "days": (c_end - c_start).days + 1}
+    return result
 
 
 class PostgreSQLSchemaProvider:
@@ -993,6 +1096,7 @@ class PostgreSQLSchemaProvider:
         self,
         rls_user_id: str,
         store_id: Optional[int] = None,
+        store_name: Optional[str] = None,
         window_days: int = 365,
         target_months_cover: int = 6,
         top_n: int = 20,
@@ -1005,6 +1109,9 @@ class PostgreSQLSchemaProvider:
                 "SELECT set_config('app.current_rls_user_id', $1, false)",
                 rls_user_id,
             )
+            store_id, refusal = await self._resolve_store(conn, store_id, store_name)
+            if refusal:
+                return refusal
             scope = await self._describe_scope(conn, store_id)
 
             # Window ends today so future-dated orders never count as sales.
@@ -1150,6 +1257,41 @@ class PostgreSQLSchemaProvider:
             if conn:
                 await self.release_connection(conn)
 
+    async def _resolve_store(
+        self, conn: asyncpg.Connection, store_id: Optional[int], store_name: Optional[str]
+    ) -> tuple[Optional[int], Optional[str]]:
+        """Turn a store name into its id, so the model never has to guess an id.
+
+        Returns (store_id, None), or (None, a JSON message) when the store is not one this user can see. An id the user cannot see is refused in words and
+        never swapped for another store, so a wrong guess cannot become silent zeros or another store's figures.
+        """
+        visible = {
+            r["store_id"]: r["store_name"]
+            for r in await conn.fetch(
+                "SELECT DISTINCT s.store_id, s.store_name FROM retail.inventory i JOIN retail.stores s ON s.store_id = i.store_id"
+            )
+        }
+        names = ", ".join(sorted(visible.values()))
+        if store_name:
+            wanted = store_name.strip().lower()
+            found = [k for k, v in visible.items() if wanted in (v.lower(), v.lower().replace("zava retail ", ""))]
+            if not found:
+                scope = await self._describe_scope(conn, None)
+                return None, json.dumps(
+                    {"results": [], "row_count": 0, "scope": scope, "message": f"No store named '{store_name}' is visible to this user. Visible stores: {names}."},
+                    indent=2,
+                    default=str,
+                )
+            return found[0], None
+        if store_id is not None and store_id not in visible:
+            scope = await self._describe_scope(conn, store_id)  # no store visible for that id, as before
+            return None, json.dumps(
+                {"results": [], "row_count": 0, "scope": scope, "message": f"Store {store_id} is not visible to this user. Do not guess a store id: leave the store empty, or use store_name. Visible stores: {names}."},
+                indent=2,
+                default=str,
+            )
+        return store_id, None
+
     async def _describe_scope(self, conn: asyncpg.Connection, store_id: Optional[int]) -> Dict[str, Any]:
         """Say which stores the current RLS user can see, so totals are never mistaken for the network."""
         rows = await conn.fetch(
@@ -1292,6 +1434,7 @@ class PostgreSQLSchemaProvider:
         rls_user_id: str,
         category_name: str,
         store_id: Optional[int] = None,
+        store_name: Optional[str] = None,
         recent_months: int = 6,
     ) -> str:
         """Give a category's seasonal pattern, when its peak is, and how recent months compare with it."""
@@ -1302,6 +1445,9 @@ class PostgreSQLSchemaProvider:
                 "SELECT set_config('app.current_rls_user_id', $1, false)",
                 rls_user_id,
             )
+            store_id, refusal = await self._resolve_store(conn, store_id, store_name)
+            if refusal:
+                return refusal
             scope = await self._describe_scope(conn, store_id)
 
             category = await conn.fetchrow(
@@ -1577,6 +1723,7 @@ class PostgreSQLSchemaProvider:
         self,
         rls_user_id: str,
         store_id: Optional[int] = None,
+        store_name: Optional[str] = None,
         category_name: Optional[str] = None,
         by: str = "product",
         min_months_cover: Optional[float] = None,
@@ -1591,6 +1738,9 @@ class PostgreSQLSchemaProvider:
                 return json.dumps({"error": "by must be 'product' or 'store_product'.", "results": []}, indent=2)
             conn = await self.get_connection()
             await conn.execute("SELECT set_config('app.current_rls_user_id', $1, false)", rls_user_id)
+            store_id, refusal = await self._resolve_store(conn, store_id, store_name)
+            if refusal:
+                return refusal
             scope = await self._describe_scope(conn, store_id)
             if category_name:
                 found = await conn.fetchval(
@@ -1721,6 +1871,7 @@ class PostgreSQLSchemaProvider:
         self,
         rls_user_id: str,
         store_id: Optional[int] = None,
+        store_name: Optional[str] = None,
         category_name: Optional[str] = None,
         season: Optional[str] = None,
         year: Optional[int] = None,
@@ -1737,6 +1888,9 @@ class PostgreSQLSchemaProvider:
             months = seasons[season.lower()] if season else None
             conn = await self.get_connection()
             await conn.execute("SELECT set_config('app.current_rls_user_id', $1, false)", rls_user_id)
+            store_id, refusal = await self._resolve_store(conn, store_id, store_name)
+            if refusal:
+                return refusal
             scope = await self._describe_scope(conn, store_id)
             if category_name:
                 found = await conn.fetchval(
@@ -1895,6 +2049,170 @@ class PostgreSQLSchemaProvider:
             )
         except Exception as e:
             return json.dumps({"error": f"Frequently bought together failed: {e!s}", "results": [], "row_count": 0}, indent=2, default=str)
+        finally:
+            if conn:
+                await self.release_connection(conn)
+
+    async def product_sales(
+        self,
+        rls_user_id: str,
+        period: str = "last_12_months",
+        compare: str = "none",
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        store_id: Optional[int] = None,
+        category_name: Optional[str] = None,
+        skus: Optional[List[str]] = None,
+        metric: str = "units",
+        rank: str = "top",
+        top_n: int = 10,
+        store_name: Optional[str] = None,
+    ) -> str:
+        """Rank products by units or revenue sold in a named period, optionally against a same-length comparison period."""
+        conn = None
+        try:
+            if metric not in ("units", "revenue"):
+                return json.dumps({"error": "metric must be units or revenue.", "results": []}, indent=2)
+            if rank not in ("top", "bottom", "biggest_drop", "biggest_gain"):
+                return json.dumps({"error": "rank must be top, bottom, biggest_drop or biggest_gain.", "results": []}, indent=2)
+            if rank in ("biggest_drop", "biggest_gain") and compare == "none":
+                compare = "previous_period"
+            conn = await self.get_connection()
+            await conn.execute("SELECT set_config('app.current_rls_user_id', $1, false)", rls_user_id)
+            store_id, refusal = await self._resolve_store(conn, store_id, store_name)
+            if refusal:
+                return refusal
+            scope = await self._describe_scope(conn, store_id)
+            today = await conn.fetchval("SELECT CURRENT_DATE")
+            try:
+                dates = resolve_period(
+                    period, today,
+                    date.fromisoformat(start_date) if start_date else None,
+                    date.fromisoformat(end_date) if end_date else None,
+                    compare,
+                )
+            except ValueError as exc:
+                return json.dumps({"error": str(exc), "results": []}, indent=2)
+            window, other = dates["window"], dates["compare"]
+            if category_name:
+                if not await conn.fetchval("SELECT 1 FROM retail.categories WHERE UPPER(category_name) = UPPER($1::text)", category_name):
+                    valid = [r["category_name"] for r in await conn.fetch("SELECT category_name FROM retail.categories ORDER BY 1")]
+                    return json.dumps({"results": [], "scope": scope, "message": "Unknown category.", "valid_categories": valid}, indent=2, default=str)
+            wanted = [x.strip().upper() for x in skus] if skus else None
+
+            # Filters are added only when given (see D29); values are bound parameters.
+            args: List[Any] = []
+
+            def bind(value: Any) -> str:
+                args.append(value)
+                return f"${len(args)}"
+
+            def sales_of(label: str, start: date, end: date) -> str:
+                conds = [f"o.order_date BETWEEN {bind(start)}::date AND {bind(end)}::date"]
+                if store_id is not None:
+                    conds.append(f"oi.store_id = {bind(store_id)}::int")
+                return (
+                    f"{label} AS (SELECT oi.product_id, SUM(oi.quantity)::numeric AS units, SUM(oi.total_amount) AS revenue "
+                    f"FROM retail.order_items oi JOIN retail.orders o ON o.order_id = oi.order_id "
+                    f"WHERE {' AND '.join(conds)} GROUP BY oi.product_id)"
+                )
+
+            ctes = [sales_of("cur", window["start"], window["end"])]
+            if other:
+                ctes.append(sales_of("prev", other["start"], other["end"]))
+            where = ["(cur.product_id IS NOT NULL" + (" OR prev.product_id IS NOT NULL" if other else "") + ")"]
+            if wanted:
+                where = [f"UPPER(p.sku) = ANY({bind(wanted)}::text[])"]
+            if category_name:
+                where.append(f"UPPER(c.category_name) = UPPER({bind(category_name)}::text)")
+            cur_metric = "COALESCE(cur.units, 0)" if metric == "units" else "COALESCE(cur.revenue, 0)"
+            prev_metric = "COALESCE(prev.units, 0)" if metric == "units" else "COALESCE(prev.revenue, 0)"
+            order_by = {
+                "top": f"{cur_metric} DESC",
+                "bottom": f"{cur_metric} ASC",
+                "biggest_drop": f"({cur_metric} - {prev_metric}) ASC",
+                "biggest_gain": f"({cur_metric} - {prev_metric}) DESC",
+            }[rank]
+            prev_cols = ", COALESCE(prev.units, 0) AS prev_units, COALESCE(prev.revenue, 0) AS prev_revenue" if other else ""
+            prev_join = "LEFT JOIN prev ON prev.product_id = p.product_id" if other else ""
+            sql = f"""
+                WITH {", ".join(ctes)}
+                SELECT p.product_name, p.sku, c.category_name,
+                       COALESCE(cur.units, 0) AS units, COALESCE(cur.revenue, 0) AS revenue{prev_cols},
+                       (SELECT COUNT(*) FROM retail.products q WHERE q.product_name = p.product_name) > 1 AS shared_name,
+                       COUNT(*) OVER () AS products_listed_before_limit,
+                       SUM(COALESCE(cur.units, 0)) OVER () AS total_units, SUM(COALESCE(cur.revenue, 0)) OVER () AS total_revenue
+                FROM retail.products p
+                JOIN retail.categories c ON c.category_id = p.category_id
+                LEFT JOIN cur ON cur.product_id = p.product_id
+                {prev_join}
+                WHERE {" AND ".join(where)}
+                ORDER BY {order_by}, p.product_name, p.sku
+                LIMIT {bind(top_n)}::int
+            """
+            rows = await conn.fetch(sql, *args)
+            no_sales = await conn.fetchval(
+                "SELECT COUNT(DISTINCT i.product_id) FROM retail.inventory i WHERE NOT EXISTS ("
+                "SELECT 1 FROM retail.order_items oi JOIN retail.orders o ON o.order_id = oi.order_id "
+                "WHERE oi.product_id = i.product_id AND o.order_date BETWEEN $1::date AND $2::date"
+                + (" AND oi.store_id = $3::int" if store_id is not None else "")
+                + ")" + (" AND i.store_id = $3::int" if store_id is not None else ""),
+                window["start"], window["end"], *([store_id] if store_id is not None else []),
+            )
+
+            def per_day(value: Any, days: int) -> float:
+                return round(float(value) / days, 2)
+
+            results = []
+            for r in rows:
+                row = {
+                    "product_name": r["product_name"], "sku": r["sku"], "category": r["category_name"],
+                    "units": int(r["units"]), "revenue": float(r["revenue"]),
+                    "units_per_day": per_day(r["units"], window["days"]),
+                    "name_is_shared_with_another_product": bool(r["shared_name"]),
+                }
+                if other:
+                    pu, pr = int(r["prev_units"]), float(r["prev_revenue"])
+                    row.update(
+                        previous_units=pu, previous_revenue=pr, previous_units_per_day=per_day(pu, other["days"]),
+                        change_units=row["units"] - pu, change_revenue=round(row["revenue"] - pr, 2),
+                        change_units_pct=round(100 * (row["units"] - pu) / pu, 1) if pu else None,
+                        change_per_day_pct=round(100 * (row["units"] / window["days"] - pu / other["days"]) / (pu / other["days"]), 1) if pu else None,
+                    )
+                results.append(row)
+            first = rows[0] if rows else None
+            ranked = {"top": "highest", "bottom": "lowest", "biggest_drop": "largest fall in", "biggest_gain": "largest rise in"}[rank]
+            return json.dumps(
+                {
+                    "scope": scope,
+                    "ranked_by": f"{ranked} {metric}" + (" sold" if metric == "units" else ""),
+                    "window": window,
+                    "compared_with": other,
+                    "parameters": {"period": period, "compare": compare, "metric": metric, "rank": rank, "store_id": store_id, "category_name": category_name, "skus": wanted, "top_n": top_n},
+                    "summary": {
+                        "products_with_sales_listed_or_candidates": int(first["products_listed_before_limit"]) if first else 0,
+                        "total_units_in_window": int(first["total_units"]) if first else 0,
+                        "total_revenue_in_window": float(first["total_revenue"]) if first else 0.0,
+                        "products_in_stock_with_no_sales_in_window": no_sales,
+                    },
+                    "row_count": len(results),
+                    "results": results,
+                    "notes": [
+                        "Orders dated after today are excluded. Revenue is the order line total after discounts.",
+                        "Ties are broken by product name, so the same question gives the same list.",
+                        "Products are kept apart by SKU. A few products share a name (see name_is_shared_with_another_product), so show the SKU for those.",
+                        "Only products with sales in the window"
+                        + (" or the comparison window" if other else "")
+                        + " are listed, unless products were asked for by SKU. Products in stock with no sales in the window are counted in the summary.",
+                        *dates["notes"],
+                        "Windows can differ in length only when a calendar period is shorter, so use the per-day figures to compare them.",
+                    ],
+                },
+                indent=2,
+                default=str,
+            )
+        except Exception as e:
+            return json.dumps({"error": f"Product sales failed: {e!s}", "results": [], "row_count": 0}, indent=2, default=str)
         finally:
             if conn:
                 await self.release_connection(conn)

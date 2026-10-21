@@ -110,7 +110,7 @@ bash scripts/run_agent.sh
 
 Wait for the line `Ready.` Leave this terminal open. Then open http://127.0.0.1:8005 and sign in with your code. Add `?debug=1` to the address to see every tool call the agent makes.
 
-Check the back end at http://127.0.0.1:8006/health. It should say `healthy`, with 14 tools and `semantic_search: ok`.
+Check the back end at http://127.0.0.1:8006/health. It should say `healthy`, with 15 tools and `semantic_search: ok`.
 
 To stop: press `Ctrl+C` in that terminal, or run `bash scripts/run_agent.sh stop` from another one. To check: `bash scripts/run_agent.sh status`.
 
@@ -118,6 +118,7 @@ To stop: press `Ctrl+C` in that terminal, or run `bash scripts/run_agent.sh stop
 
 | Ask | What it shows |
 |---|---|
+| hi | A greeting that names you, your role and which stores you can see, with example questions |
 | Where is the most capital tied up in excess stock? Top 5. | A table, the `Scope:` line, value at cost described as an upper bound |
 | Which stores are most and least aligned to the national seasonal pattern? | Ranking of stores (as a store manager it says it can see only one store) |
 | Which products have more than 5 years of stock? Give me a CSV | A download link |

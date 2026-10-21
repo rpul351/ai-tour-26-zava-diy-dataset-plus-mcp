@@ -205,6 +205,57 @@ def test_the_semantic_search_probe_tells_ok_from_empty_from_failed():
     assert asyncio.run(result(raises=True)).startswith("failed (RuntimeError)")
 
 
+def test_a_finding_and_an_offer_in_one_line_keeps_the_finding():
+    answer = "Scope: all 8 stores\n\nThe total excess is 190,845,866 dollars at cost. If you want, I can break it down by store."
+    assert agent_service.without_closing_offer(answer, True) == "Scope: all 8 stores\n\nThe total excess is 190,845,866 dollars at cost."
+    bullet = "Body.\n\n- Hold orders for the 4 power tools. I can also export the 424 rows to CSV."
+    assert agent_service.without_closing_offer(bullet, True) == "Body.\n\n- Hold orders for the 4 power tools."
+
+
+def test_an_answer_is_never_reduced_to_its_scope_line():
+    only = "Scope: all 8 stores\n\nIf you want, I can give the total; tell me which store."
+    assert agent_service.without_closing_offer(only, True) == only.strip()
+
+
+NOT_VISIBLE = '{"scope": {"stores_included": [], "store_count": 0}, "results": [], "row_count": 0}'
+VISIBLE = '{"scope": {"stores_included": ["Zava Retail Seattle"], "store_count": 1}, "results": [{"units": 4}], "row_count": 1}'
+
+
+def test_zeros_from_a_store_the_tool_could_not_see_are_not_accepted_as_data():
+    answer = "Scope: Seattle\n\nWindow Casing Set sold 0 units this month and 0 in the previous period."
+    assert agent_service.empty_scope_problem([NOT_VISIBLE], answer)
+    assert not agent_service.empty_scope_problem([NOT_VISIBLE, VISIBLE], answer)  # a later good result recovers
+    assert not agent_service.empty_scope_problem([NOT_VISIBLE], "I cannot see that store, so I have no sales figures for it.")
+    assert not agent_service.empty_scope_problem([VISIBLE], answer)
+    assert agent_service.empty_scope_problem(['{"message": "No store named \'Atlantis\' is visible to this user."}'], answer)
+
+
+def test_a_message_that_is_only_a_greeting_gets_a_friendly_reply_with_no_model_call():
+    from access import STORE_RLS_IDS
+
+    kirkland = STORE_RLS_IDS["Zava Retail Kirkland"]
+    for hello in ("hi", "Hi!", "Hello!", "hey there", "Good morning", "good evening!!", "kia ora", "HELLO", "hi there \U0001F44B", "g'day"):
+        if "\U0001F44B" in hello:
+            hello = hello.replace(" \U0001F44B", "")
+        reply = agent_service.canned_reply(hello, agent_service.GLOBAL_RLS_ID, "rpul351")
+        assert reply and reply.startswith("Hello!") and "Zava Inventory Advisor" in reply, hello
+        assert "all 8 stores" in reply and "Rpul351" in reply
+    mine = agent_service.canned_reply("hi", kirkland, "kim")
+    assert "Kirkland" in mine and "all 8 stores" not in mine
+
+
+def test_thanks_goodbye_and_about_questions_are_answered_and_real_questions_are_not_intercepted():
+    g = agent_service.GLOBAL_RLS_ID
+    assert agent_service.canned_reply("thanks!", g, None).startswith("You're welcome")
+    assert agent_service.canned_reply("Thank you", g, None).startswith("You're welcome")
+    assert agent_service.canned_reply("bye", g, None).startswith("Goodbye")
+    for about in ("who are you?", "What can you do?", "help", "how can you help me"):
+        assert "Zava Inventory Advisor" in agent_service.canned_reply(about, g, None), about
+    for real in ("hi, which store sold the most in 2023?", "hello what is the stock of cedar", "who sold the most", "help me find paint", "thanks, now show excess stock", "what can you tell me about Seattle sales"):
+        assert agent_service.canned_reply(real, g, None) is None, real
+    assert agent_service.canned_reply("", g, None) is None
+
+
 if __name__ == "__main__":
     tests = [fn for name, fn in sorted(globals().items()) if name.startswith("test_")]
     for fn in tests:

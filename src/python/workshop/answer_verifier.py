@@ -28,7 +28,7 @@ class Verification:
         return found + self.issues
 
 
-def _checkable_figures(answer: str) -> list[tuple[str, float, float]]:
+def _checkable_figures(answer: str, in_table: bool = False) -> list[tuple[str, float, float]]:
     """Return (text, absolute value, tolerance) for every figure worth checking."""
     text = _DATE.sub(" ", answer)
     figures = []
@@ -36,15 +36,16 @@ def _checkable_figures(answer: str) -> list[tuple[str, float, float]]:
         raw = match.group()
         tail = text[match.end() : match.end() + 12]
         suffix = _SUFFIX.match(tail)
-        if not suffix and re.match(r"-?[A-Za-z]", tail):
+        is_ratio = "." in raw and re.match(r"x(?![\w])", tail) is not None  # "2.56x" is a multiplier, not a code like 2x4x8
+        if not suffix and not is_ratio and re.match(r"-?[A-Za-z]", tail):
             continue  # part of a name or code, such as 12-inch, 50lb or 2x4x8
         digits = raw.replace("$", "").replace(",", "").lstrip("-")
         decimals = len(digits.split(".")[1]) if "." in digits else 0
         scale = _SCALE.get(suffix.group(1).lower().strip(), 1.0) if suffix else 1.0
         is_plain_integer = not suffix and "$" not in raw and "," not in raw and "." not in raw
         value = float(digits)
-        if is_plain_integer and (value < 100 or 1900 <= value <= 2100):
-            continue  # counts, ranks, months and years
+        if is_plain_integer and (value < (10 if in_table else 100) or 1900 <= value <= 2100):
+            continue  # counts, ranks, months and years; a table cell from 10 up is data and is checked
         figures.append((raw + (suffix.group(0) if suffix else ""), value * scale, 0.5 * 10 ** (-decimals) * scale))
     return figures
 
@@ -156,6 +157,15 @@ def _check_calculation(line: str, values: list[float], result: Verification) -> 
     insort(values, claimed)  # a confirmed result may be used by later lines
 
 
+_SKU = re.compile(r"\b[A-Z]{2,}[A-Z]*\d{2,}[A-Z\d]*\b")
+
+
+def _unsupported_skus(answer: str, evidence: list[str]) -> list[str]:
+    """SKUs in the answer that no tool result and no part of the question contains: an invented or mistyped product code."""
+    seen = "\n".join(evidence).upper()
+    return sorted({m for m in _SKU.findall(answer) if m not in seen})
+
+
 _TABLE_ROW = re.compile(r"^\s*\|.*\|\s*$")
 
 
@@ -225,7 +235,7 @@ def verify_answer(answer: str, evidence: list[str]) -> Verification:
     figures = []
     for line in prose.splitlines():
         row = _row_numbers(line) if _TABLE_ROW.match(line) else None
-        for text, value, tolerance in _checkable_figures(line):
+        for text, value, tolerance in _checkable_figures(line, in_table=row is not None):
             figures.append((text, value, tolerance))
             label = text.strip()
             if label in result.unverified or _present(values, value, tolerance):
@@ -233,6 +243,10 @@ def verify_answer(answer: str, evidence: list[str]) -> Verification:
             if row is not None and _derivable(value, tolerance, row, values):
                 continue
             result.unverified.append(label)
+
+    invented = _unsupported_skus("\n".join(prose.splitlines()), evidence)
+    if invented:
+        result.issues.append("SKUs not found in any tool result: " + ", ".join(invented) + ". Use only product codes a tool returned.")
 
     joined = "\n".join(evidence)
     if figures and '"scope"' in joined and not re.search(r"^\W*scope:", answer, re.IGNORECASE | re.MULTILINE):

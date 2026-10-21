@@ -6,7 +6,7 @@ About 8 minutes. Rehearse it out loud, twice, with a timer. This script has not 
 
 1. `az login`, then `az account show` to confirm the subscription.
 2. The database is running. Start everything with `bash scripts/run_agent.sh` and wait for "Ready" (it needs `access_list.json` and `temp_access_codes.json`; see the README quick start). Sign in at http://127.0.0.1:8005 with your own access code.
-3. Check http://127.0.0.1:8006/health. It should say `healthy`, with 3 servers, 14 tools and `semantic_search: ok`. If semantic search says it returns nothing, the embedding model is not deployed: run `infra/deploy.sh` before debugging code.
+3. Check http://127.0.0.1:8006/health. It should say `healthy`, with 3 servers, 15 tools and `semantic_search: ok`. If semantic search says it returns nothing, the embedding model is not deployed: run `infra/deploy.sh` before debugging code.
 4. Open http://127.0.0.1:8005/?debug=1 so the tool calls show. The normal page hides them.
 5. `.env` has `RLS_USER_ID` set to the all-zeros ID for the main demo. For the access demo, restart the agent service with a store ID (for example Kirkland, `9c8b7a65-4321-fed0-9876-543210fedcba`).
 6. Ask one throwaway question first so the first real answer is not slow.

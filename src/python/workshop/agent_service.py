@@ -269,7 +269,9 @@ Rules
 - Orders dated after today are not real sales. Windows must end today.
 - Fetch table schemas before writing SQL. Use exact column names and limit results.
 - For product lookups use get_products_by_name (by name) or semantic_search_products (by description). For history and trends: ALWAYS call year_over_year_summary first for any question about a calendar year, a comparison between years, or "what happened in <year>". Never write SQL for those. Use execute_sales_query only for questions no dedicated tool covers. Give the change and where it is concentrated, and do not invent causes the data does not hold. A year_over_year_summary result already holds the totals, every store, every category and every month, so in one answer give both years' totals and the change in units, revenue and orders, then the movers listed under biggest_movers (they cover both amount and percentage). Do not offer breakdowns you already have.
-- Prefer the dedicated tools (rank_capital_tied_up, compare_store_coverage, seasonal_baseline_check, year_over_year_summary, store_seasonal_alignment, stock_cover_ranking, frequently_bought_together) for stock, coverage, seasonal, year, store-pattern and bought-together figures. Use store_seasonal_alignment for which stores follow or differ from the company seasonal pattern (leave the category empty unless the user names one), stock_cover_ranking for the gap between stock and sales speed or for products with more than N years of stock, and frequently_bought_together for product pairs by store, season, year or category. To analyse products you found with semantic_search_products or get_products_by_name, pass their SKUs in the skus argument of stock_cover_ranking or frequently_bought_together, so the figures cover exactly those products instead of a top-N list. Write your own SQL only for questions they cannot answer. Never join inventory to order_items in one query and then sum stock: that repeats each stock row once per order line. Aggregate stock and sales separately, then join.
+- Prefer the dedicated tools (rank_capital_tied_up, compare_store_coverage, seasonal_baseline_check, year_over_year_summary, store_seasonal_alignment, stock_cover_ranking, frequently_bought_together) for stock, coverage, seasonal, year, store-pattern and bought-together figures. Use product_sales for every question about which products sold most, least, best, worst, latest or changed, and how a named product is doing: give it the period name (this_month, this_season, last_12_months and so on) and it resolves exact dates and compares equal-length windows. Use store_seasonal_alignment for which stores follow or differ from the company seasonal pattern (leave the category empty unless the user names one), stock_cover_ranking for the gap between stock and sales speed or for products with more than N years of stock, and frequently_bought_together for product pairs by store, season, year or category. To analyse products you found with semantic_search_products or get_products_by_name, pass their SKUs in the skus argument of stock_cover_ranking or frequently_bought_together, so the figures cover exactly those products instead of a top-N list. Write your own SQL only for questions they cannot answer. Never join inventory to order_items in one query and then sum stock: that repeats each stock row once per order line. Aggregate stock and sales separately, then join.
+- Never guess a store id. To pick a store, pass store_name (for example Seattle); the tool resolves it. If a tool says a store is not visible or not found, do not report its zeros as sales: say you could not find or see that store, or run the tool again without a store.
+- Sales wording means one thing every time. "Best", "top", "most" and "sales" rank by units unless the user says revenue, money or dollars; "worst" or "performing worst" means the biggest fall in units against an equal-length earlier period; with no period given use the last 12 months. "Latest" or "most recent" order lines means ORDER BY order_date DESC, order_id DESC, order_item_id DESC, and you say how many lines share the latest date, because many do. When asked how a product is doing, compare it with the previous equal-length period (compare=previous_period) so the answer shows a trend, not just one number. Always say in one line which metric and which dates you used, and show units and revenue together. Never compare two windows of different lengths without per-day figures. If the user asks why a number changed from an earlier answer, run the tool again with the same arguments and explain the difference in the windows or the metric; do not guess.
 - Never say you cannot answer a Zava question because no tool matches it. Work it out from the data yourself: fetch the table schemas, write read-only SQL with execute_sales_query, check the result, and answer. If the data cannot answer it, say what is missing in one sentence and give the closest figures you do have. Show at most 10 rows of any list and give the count for the rest.
 - If a comparison needs stores this user cannot see, say so in one sentence, then answer with the closest thing you can do for their own scope (for example their own seasonal pattern per category) in the same answer, and do not offer options.
 - Every tool result that has a "scope" field lists the stores it covers. Begin any answer that contains figures with a line "Scope: <the stores listed>". If covers_all_stores is true the figures are network totals and you may say so. If it is false, and the user asks for a network, company or all-store figure, say plainly that you can only see the listed stores and cannot give a network total, then label the figure with those stores. Never call a figure a network total unless covers_all_stores is true.
@@ -522,6 +524,24 @@ BROAD_SCOPE = re.compile(r"(?i)\b(all|every|each|other|the other|rest of the)\s+
 CANNOT_SEE = re.compile(r"(?i)\b(cannot|can't|can not|unable|not able|only see|not visible|no access|outside|don't have access)\b")
 
 
+_NOT_VISIBLE = re.compile(r'"store_count":\s*0\b|is not visible to this user|No store named')
+_VISIBLE = re.compile(r'"store_count":\s*[1-9]')
+
+
+def empty_scope_problem(turn_results: list[str], answer: str) -> list[str]:
+    """A tool that said the store was not visible returned zeros that are not sales figures; the answer must not present them as data."""
+    last_bad = max((i for i, t in enumerate(turn_results) if _NOT_VISIBLE.search(t)), default=None)
+    if last_bad is None:
+        return []
+    recovered = any(_VISIBLE.search(t) and not _NOT_VISIBLE.search(t) and '"results": []' not in t for t in turn_results[last_bad + 1 :])
+    if recovered or CANNOT_SEE.search(answer) or re.search(r"(?i)not visible|no store named", answer):
+        return []
+    return [
+        "A tool reported that no store was visible for that request (a wrong or unknown store), so its zeros and empty rows are not sales figures. "
+        "Run the tool again without a store id, or with store_name, and answer from that result; or say plainly that the store could not be found."
+    ]
+
+
 def scope_problem(message: str, identity: str | None, answer: str) -> list[str]:
     """A store user who asks about another store must be told it is not visible, not given their own figure."""
     if identity in (None, GLOBAL_RLS_ID):
@@ -583,6 +603,21 @@ def _strip_offer(answer: str) -> str:
         asks = bool(OFFER.search(text)) or text.endswith("?") or bool(re.match(r"[\-*\d.)\s]*I (can|could|will|['\u2019]ll)\b", text))
         return asks and "](/" not in text and len(text) <= 600 and (not re.search(r"\d", text) or bool(ASSISTANT_OFFER.search(text)))
 
+    def is_offer_sentence(sentence: str) -> bool:
+        text = sentence.strip()
+        if "](/" in text:
+            return False
+        asks = bool(OFFER.search(text)) or text.endswith("?") or bool(re.match(r"I (can|could|will|['\u2019]ll)\b", text))
+        return asks and (not re.search(r"\d", text) or bool(ASSISTANT_OFFER.search(text)))
+
+    def trim_offer_sentences(line: str) -> str:
+        """Remove trailing offer sentences from a line. Earlier sentences, which may hold figures, are kept."""
+        prefix = re.match(r"\s*(?:[-*]|\d+[.)])?\s*", line).group(0)
+        sentences = re.split(r"(?<=[.!?])\s+", line[len(prefix):].strip())
+        while sentences and is_offer_sentence(sentences[-1]):
+            sentences.pop()
+        return prefix + " ".join(sentences) if sentences else ""
+
     def is_header(line: str) -> bool:
         text = line.strip()
         return (bool(OFFER.search(text)) or bool(ASSISTANT_OFFER.search(text))) and text.endswith((":", "?")) and "](/" not in text
@@ -590,7 +625,16 @@ def _strip_offer(answer: str) -> str:
     lines = answer.strip().split("\n")
     for _ in range(4):  # a closing question, then the offer block above it, then a sentence before that
         before = len(lines)
-        while len([ln for ln in lines if ln.strip()]) > 1 and (not lines[-1].strip() or is_offer(lines[-1])):
+        while len([ln for ln in lines if ln.strip()]) > 1:
+            if not lines[-1].strip():
+                lines.pop()
+                continue
+            trimmed = trim_offer_sentences(lines[-1])
+            if trimmed == lines[-1]:
+                break
+            if trimmed:
+                lines[-1] = trimmed  # a finding stays; only its offer sentence goes
+                break
             lines.pop()
         for i in range(max(0, len(lines) - 14), len(lines)):  # an offer block is short and last
             block = lines[i:]
@@ -601,7 +645,10 @@ def _strip_offer(answer: str) -> str:
                 break
         if len(lines) == before:
             break
-    return "\n".join(lines).rstrip()
+    kept = "\n".join(lines).rstrip()
+    if not [ln for ln in kept.splitlines() if ln.strip() and not re.match(r"\W*scope:", ln, re.IGNORECASE)]:
+        return answer.strip()  # never deliver an answer with nothing but its Scope line
+    return kept
 
 
 def revision_request(problems: list[str]) -> str:
@@ -613,6 +660,58 @@ def revision_request(problems: list[str]) -> str:
         "Put any figure you work out yourself on a line in the form 'My calculation: <inputs> = <result>', using only inputs from tool results or the user's question. "
         "Keep the Scope line. Do not mention this check."
     )
+
+
+_GREETING = re.compile(
+    r"(hi|hello|hey|hiya|howdy|yo|greetings|g'?day|kia ora|good (morning|afternoon|evening|day)|hi there|hello there|hey there|hello again|hi again)( (there|team|everyone|all|agent|advisor|bot))?"
+)
+_THANKS = re.compile(r"(thanks|thank you|thankyou|thx|ty|cheers|ta|much appreciated|thanks a lot|thank you very much)( (so much|a lot|again))?")
+_GOODBYE = re.compile(r"(bye|goodbye|good bye|see you|see ya|cya|later|good night)( (now|later|soon))?")
+_ABOUT = re.compile(
+    r"(who are you|what are you|what is this|what do you do|what can you do|what can i ask( you)?|what can you help (me )?with|how can you help( me)?|help|help me|how do i use this|how does this work|what should i ask|what questions can i ask|introduce yourself|are you there|anyone there)"
+)
+_EXAMPLES = (
+    "- Which products have more than 5 years of stock?\n"
+    "- What are the top selling products in the last 12 months?\n"
+    "- Where is the most capital tied up in excess stock? Top 5, as a table\n"
+    "- Which stores follow the company's seasonal pattern most closely?\n"
+    "- Give me a histogram for June garden sales, or a CSV of any list"
+)
+
+
+def canned_reply(message: str, identity: str | None, user: str | None) -> str | None:
+    """Answer a message that is only a greeting, thanks, goodbye or a question about the agent itself, with no model call.
+
+    Anything that holds a real question returns None and goes to the model. The wording is fixed, so every person gets the
+    same friendly reply, and it names who they are signed in as and what they can see.
+    """
+    text = re.sub(r"[^\w' ]+", " ", message.lower().replace("\u2019", "'"))
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text or len(text) > 40:
+        return None
+    signed_in = describe_viewer(identity, user).replace("The person asking is ", "You are signed in as ", 1)
+    if _GREETING.fullmatch(text):
+        return (
+            f"Hello! I'm the Zava Inventory Advisor. {signed_in}\n\n"
+            "I answer from the live Zava data: stock and excess, sales and best or worst sellers, seasonal patterns, products and which sell together. "
+            "I can show results as tables, charts, and CSV or PDF downloads.\n\nFor example:\n" + _EXAMPLES
+        )
+    if _ABOUT.fullmatch(text):
+        return (
+            f"I'm the Zava Inventory Advisor. {signed_in}\n\n"
+            "I only use data returned by my tools from the Zava database, and every figure is checked before you see it. I can:\n"
+            "- rank where stock is tied up and how many months of stock products hold,\n"
+            "- show best and worst sellers and how products changed against an earlier period,\n"
+            "- compare stores, years and seasonal patterns,\n"
+            "- find products by description and which are bought together,\n"
+            "- present any result as a table, chart, CSV or PDF.\n\n"
+            "I never place orders or move stock; I draft recommendations for a person to approve.\n\nTry:\n" + _EXAMPLES
+        )
+    if _THANKS.fullmatch(text):
+        return "You're welcome. Ask me anything else about Zava stock, sales or products."
+    if _GOODBYE.fullmatch(text):
+        return "Goodbye. Come back any time you want to check Zava stock or sales."
+    return None
 
 
 async def run_turn(
@@ -628,6 +727,15 @@ async def run_turn(
     if not tools:
         yield {"error": "No MCP tools are available. Check /health for the server status."}
         return
+    greeting = canned_reply(message, identity, user)
+    if greeting is not None:
+        history = sessions.setdefault(session_id, [])
+        history.extend([{"role": "user", "content": message}, {"role": "assistant", "content": greeting}])
+        del history[:-MAX_STORED_MESSAGES]
+        record("turn", session_id, **log, question=message, answer=greeting, revisions=0, tool_calls=0, ms=0, prompt_tokens=0, completion_tokens=0, unresolved_problems=[], canned=True)
+        yield {"content": greeting}
+        yield {"done": True}
+        return
     tools = [*tools, CHART_TOOL, EXPORT_TOOL, CALC_TOOL]
     history = sessions.setdefault(session_id, [])
     evidence = evidence_store.setdefault(session_id, [])
@@ -635,6 +743,7 @@ async def run_turn(
     turn_started = time.perf_counter()
     tokens = {"prompt": 0, "completion": 0}
     tool_count = 0
+    turn_results: list[str] = []
     system = {
         "role": "system",
         "content": SYSTEM_PROMPT.format(
@@ -664,7 +773,7 @@ async def run_turn(
 
         if not calls:
             answer = repair_tables(without_closing_offer(reply.content or "", tool_count > 0))
-            problems = verify_answer(answer, [*evidence, message]).problems + scope_problem(message, identity, answer)
+            problems = verify_answer(answer, [*evidence, message]).problems + scope_problem(message, identity, answer) + empty_scope_problem(turn_results, answer)
             if problems and revisions < MAX_REVISIONS:
                 revisions += 1
                 logger.warning("Answer failed verification (revision %d): %s", revisions, problems)
@@ -756,6 +865,8 @@ async def run_turn(
                 error=text.startswith("Tool error"),
                 ms=elapsed_ms,
             )
+            if call.function.name not in (CHART_TOOL_NAME, EXPORT_TOOL_NAME, CALC_TOOL_NAME):
+                turn_results.append(text)
             if call.function.name not in (CHART_TOOL_NAME, EXPORT_TOOL_NAME):
                 evidence.append(text)
                 del evidence[:-MAX_EVIDENCE_ITEMS]
