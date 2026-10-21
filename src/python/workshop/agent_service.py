@@ -662,6 +662,58 @@ def revision_request(problems: list[str]) -> str:
     )
 
 
+_GREETING = re.compile(
+    r"(hi|hello|hey|hiya|howdy|yo|greetings|g'?day|kia ora|good (morning|afternoon|evening|day)|hi there|hello there|hey there|hello again|hi again)( (there|team|everyone|all|agent|advisor|bot))?"
+)
+_THANKS = re.compile(r"(thanks|thank you|thankyou|thx|ty|cheers|ta|much appreciated|thanks a lot|thank you very much)( (so much|a lot|again))?")
+_GOODBYE = re.compile(r"(bye|goodbye|good bye|see you|see ya|cya|later|good night)( (now|later|soon))?")
+_ABOUT = re.compile(
+    r"(who are you|what are you|what is this|what do you do|what can you do|what can i ask( you)?|what can you help (me )?with|how can you help( me)?|help|help me|how do i use this|how does this work|what should i ask|what questions can i ask|introduce yourself|are you there|anyone there)"
+)
+_EXAMPLES = (
+    "- Which products have more than 5 years of stock?\n"
+    "- What are the top selling products in the last 12 months?\n"
+    "- Where is the most capital tied up in excess stock? Top 5, as a table\n"
+    "- Which stores follow the company's seasonal pattern most closely?\n"
+    "- Give me a histogram for June garden sales, or a CSV of any list"
+)
+
+
+def canned_reply(message: str, identity: str | None, user: str | None) -> str | None:
+    """Answer a message that is only a greeting, thanks, goodbye or a question about the agent itself, with no model call.
+
+    Anything that holds a real question returns None and goes to the model. The wording is fixed, so every person gets the
+    same friendly reply, and it names who they are signed in as and what they can see.
+    """
+    text = re.sub(r"[^\w' ]+", " ", message.lower().replace("\u2019", "'"))
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text or len(text) > 40:
+        return None
+    signed_in = describe_viewer(identity, user).replace("The person asking is ", "You are signed in as ", 1)
+    if _GREETING.fullmatch(text):
+        return (
+            f"Hello! I'm the Zava Inventory Advisor. {signed_in}\n\n"
+            "I answer from the live Zava data: stock and excess, sales and best or worst sellers, seasonal patterns, products and which sell together. "
+            "I can show results as tables, charts, and CSV or PDF downloads.\n\nFor example:\n" + _EXAMPLES
+        )
+    if _ABOUT.fullmatch(text):
+        return (
+            f"I'm the Zava Inventory Advisor. {signed_in}\n\n"
+            "I only use data returned by my tools from the Zava database, and every figure is checked before you see it. I can:\n"
+            "- rank where stock is tied up and how many months of stock products hold,\n"
+            "- show best and worst sellers and how products changed against an earlier period,\n"
+            "- compare stores, years and seasonal patterns,\n"
+            "- find products by description and which are bought together,\n"
+            "- present any result as a table, chart, CSV or PDF.\n\n"
+            "I never place orders or move stock; I draft recommendations for a person to approve.\n\nTry:\n" + _EXAMPLES
+        )
+    if _THANKS.fullmatch(text):
+        return "You're welcome. Ask me anything else about Zava stock, sales or products."
+    if _GOODBYE.fullmatch(text):
+        return "Goodbye. Come back any time you want to check Zava stock or sales."
+    return None
+
+
 async def run_turn(
     app: FastAPI, session_id: str, message: str, rls_user_id: str | None = None, user: str | None = None
 ) -> AsyncGenerator[dict[str, Any], None]:
@@ -674,6 +726,15 @@ async def run_turn(
     log = {"user": user, "rls_user_id": identity}
     if not tools:
         yield {"error": "No MCP tools are available. Check /health for the server status."}
+        return
+    greeting = canned_reply(message, identity, user)
+    if greeting is not None:
+        history = sessions.setdefault(session_id, [])
+        history.extend([{"role": "user", "content": message}, {"role": "assistant", "content": greeting}])
+        del history[:-MAX_STORED_MESSAGES]
+        record("turn", session_id, **log, question=message, answer=greeting, revisions=0, tool_calls=0, ms=0, prompt_tokens=0, completion_tokens=0, unresolved_problems=[], canned=True)
+        yield {"content": greeting}
+        yield {"done": True}
         return
     tools = [*tools, CHART_TOOL, EXPORT_TOOL, CALC_TOOL]
     history = sessions.setdefault(session_id, [])

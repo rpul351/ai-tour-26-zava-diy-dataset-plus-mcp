@@ -192,6 +192,13 @@ def test_a_sku_the_user_typed_is_allowed_and_ordinary_words_are_not_mistaken_for
     assert verify_answer("Scope: all\n\nNo sales for LBMLD005 this month, using HTTP2 and GPT4 style names is not a SKU.", ev).problems == []
 
 
+def test_a_decimal_multiplier_is_checked_but_dimensions_and_whole_multipliers_are_not():
+    ev = ['{"ratio": 2.57, "peak": 1.561, "quiet": 0.608}']
+    assert verify_answer("Scope: all\n\nPeak demand is about 2.57x the quiet month.", ev).problems == []
+    assert any("2.9" in p for p in verify_answer("Scope: all\n\nPeak demand is about 2.9x the quiet month.", ev).problems)
+    assert verify_answer("Scope: all\n\nUse 2x4x8 lumber, 12-inch brackets and a 3x gap.", ev).problems == []
+
+
 if __name__ == "__main__":
     tests = [fn for name, fn in sorted(globals().items()) if name.startswith("test_")]
     for fn in tests:

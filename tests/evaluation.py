@@ -324,6 +324,13 @@ def build_cases(t: dict) -> list[Case]:
         Case("K3", "Consistency", "seattle", "how \"windows casing set\" is doing in Seattle store in this month",
              f"Real figures for Window Casing Set ({t['window_casing'][0]} this month against {t['window_casing'][1]} in the same days last month), never 'no data visible'.",
              lambda a: scope(a) + collect(("Window Casing Set" in a, "product not named"), ("no data visible" not in a.lower() and "no stores listed" not in a.lower(), "claimed no data is visible"), (bool(re.search(rf"\b{t['window_casing'][1]}\b", a)), "previous-window figure missing"))),
+        # Greetings (tester feedback: saying hi got no hello). Rules fixed before the first run.
+        Case("G1", "Greeting", "global", "hi",
+             "A friendly hello that names the agent and says the user is a super manager who sees all 8 stores, with example questions, and never calls it outside scope.",
+             lambda a: collect((a.lower().startswith("hello"), "does not start with hello"), ("Zava Inventory Advisor" in a, "agent not named"), (bool(re.search(r"(?i)all (8|eight) stores", a)), "role and scope not stated"), (bool(re.search(r"(?i)outside what i do|only help", a)) is False, "treated the greeting as out of scope"), ("?" in a or "-" in a, "no example questions"))),
+        Case("G2", "Greeting", "kirkland", "Hello!",
+             "A friendly hello that says the user can see only Kirkland, not all stores.",
+             lambda a: collect((a.lower().startswith("hello"), "does not start with hello"), ("Kirkland" in a, "Kirkland not named"), (not re.search(r"(?i)all (8|eight) stores", a), "told a store manager they see all stores"))),
         *guard,
         *limits,
         # Charts (team report: no bar chart or histogram). Rules fixed before the first run of these cases.

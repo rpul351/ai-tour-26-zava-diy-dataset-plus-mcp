@@ -230,6 +230,32 @@ def test_zeros_from_a_store_the_tool_could_not_see_are_not_accepted_as_data():
     assert agent_service.empty_scope_problem(['{"message": "No store named \'Atlantis\' is visible to this user."}'], answer)
 
 
+def test_a_message_that_is_only_a_greeting_gets_a_friendly_reply_with_no_model_call():
+    from access import STORE_RLS_IDS
+
+    kirkland = STORE_RLS_IDS["Zava Retail Kirkland"]
+    for hello in ("hi", "Hi!", "Hello!", "hey there", "Good morning", "good evening!!", "kia ora", "HELLO", "hi there \U0001F44B", "g'day"):
+        if "\U0001F44B" in hello:
+            hello = hello.replace(" \U0001F44B", "")
+        reply = agent_service.canned_reply(hello, agent_service.GLOBAL_RLS_ID, "rpul351")
+        assert reply and reply.startswith("Hello!") and "Zava Inventory Advisor" in reply, hello
+        assert "all 8 stores" in reply and "Rpul351" in reply
+    mine = agent_service.canned_reply("hi", kirkland, "kim")
+    assert "Kirkland" in mine and "all 8 stores" not in mine
+
+
+def test_thanks_goodbye_and_about_questions_are_answered_and_real_questions_are_not_intercepted():
+    g = agent_service.GLOBAL_RLS_ID
+    assert agent_service.canned_reply("thanks!", g, None).startswith("You're welcome")
+    assert agent_service.canned_reply("Thank you", g, None).startswith("You're welcome")
+    assert agent_service.canned_reply("bye", g, None).startswith("Goodbye")
+    for about in ("who are you?", "What can you do?", "help", "how can you help me"):
+        assert "Zava Inventory Advisor" in agent_service.canned_reply(about, g, None), about
+    for real in ("hi, which store sold the most in 2023?", "hello what is the stock of cedar", "who sold the most", "help me find paint", "thanks, now show excess stock", "what can you tell me about Seattle sales"):
+        assert agent_service.canned_reply(real, g, None) is None, real
+    assert agent_service.canned_reply("", g, None) is None
+
+
 if __name__ == "__main__":
     tests = [fn for name, fn in sorted(globals().items()) if name.startswith("test_")]
     for fn in tests:

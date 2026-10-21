@@ -36,7 +36,8 @@ def _checkable_figures(answer: str, in_table: bool = False) -> list[tuple[str, f
         raw = match.group()
         tail = text[match.end() : match.end() + 12]
         suffix = _SUFFIX.match(tail)
-        if not suffix and re.match(r"-?[A-Za-z]", tail):
+        is_ratio = "." in raw and re.match(r"x(?![\w])", tail) is not None  # "2.56x" is a multiplier, not a code like 2x4x8
+        if not suffix and not is_ratio and re.match(r"-?[A-Za-z]", tail):
             continue  # part of a name or code, such as 12-inch, 50lb or 2x4x8
         digits = raw.replace("$", "").replace(",", "").lstrip("-")
         decimals = len(digits.split(".")[1]) if "." in digits else 0
