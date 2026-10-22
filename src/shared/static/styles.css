@@ -279,3 +279,19 @@ body {
 .assistant th { background: #f0f4f8; font-weight: 600; }
 .assistant tr:nth-child(even) td { background: #f8fafc; }
 .assistant td[align="right"], .assistant th[align="right"] { text-align: right; }
+
+/* Save and print the conversation */
+.header { position: relative; }
+.header-actions { position: absolute; right: 8px; top: 4px; display: flex; gap: 6px; }
+.header-actions button { font-size: 0.75em; padding: 2px 8px; border: 1px solid rgba(255,255,255,0.7); background: rgba(255,255,255,0.15); color: white; border-radius: 6px; cursor: pointer; }
+.header-actions button:hover { background: rgba(255,255,255,0.3); }
+
+@media print {
+    body { background: white; padding: 0; }
+    .chat-container { height: auto; box-shadow: none; max-width: none; overflow: visible; display: block; }
+    .messages { overflow: visible; display: block; padding: 0; }
+    .message { break-inside: avoid; margin: 10px 0; }
+    .header-actions, .input-container { display: none !important; }
+    .assistant table { display: table; overflow: visible; font-size: 0.85em; }
+    .assistant th, .assistant td { white-space: normal; }
+}

@@ -118,7 +118,9 @@ To stop: press `Ctrl+C` in that terminal, or run `bash scripts/run_agent.sh stop
 
 | Ask | What it shows |
 |---|---|
-| hi | A greeting that names you, your role and which stores you can see, with example questions |
+| hi | A short greeting that names you, your role and which stores you can see |
+| do you consider yourself a chatbot or an agent? | A short, factual answer about the agent itself, with no data fetched |
+| how do I export our chat | It points you to the Save chat and Print / PDF buttons in the page header |
 | Where is the most capital tied up in excess stock? Top 5. | A table, the `Scope:` line, value at cost described as an upper bound |
 | Which stores are most and least aligned to the national seasonal pattern? | Ranking of stores (as a store manager it says it can see only one store) |
 | Which products have more than 5 years of stock? Give me a CSV | A download link |

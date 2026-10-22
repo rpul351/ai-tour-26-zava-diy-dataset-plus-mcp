@@ -17,6 +17,21 @@ const sessionId = sessionStorage.getItem('sessionId') || (() => {
 // Tool calls are technical detail: shown only when the page is opened with ?debug=1 (for demos).
 const SHOW_TOOL_CALLS = new URLSearchParams(window.location.search).has('debug');
 
+// Every question and final answer, kept in this tab so the chat can be saved. Nothing is sent anywhere.
+const transcript = [];
+
+// Save the conversation as a Markdown file, or print it (the browser can save that as a PDF).
+function saveChat() {
+    const text = ZavaTranscript.buildTranscript(transcript, { now: new Date() });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(new Blob([text], { type: 'text/markdown;charset=utf-8' }));
+    link.download = ZavaTranscript.fileName(new Date());
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+}
+
 // Show one tool call the agent made, above its answer.
 function addToolCall(toolsDiv, tool) {
     const line = document.createElement('div');
@@ -98,6 +113,7 @@ async function sendMessage() {
                 `${message}\n\n📄 Uploaded file: ${uploadedFile.name}` : 
                 `📄 Analyze this file: ${uploadedFile.name}`;
             addMessage(fileMessage, true);
+            transcript.push({ role: 'user', text: fileMessage });
             
             // Upload file first
             const formData = new FormData();
@@ -123,6 +139,7 @@ async function sendMessage() {
         } else {
             // Regular text message
             addMessage(message, true);
+            transcript.push({ role: 'user', text: message });
         }
         
         messageInput.value = '';
@@ -224,6 +241,7 @@ async function sendMessage() {
                 }
                 // Render final markdown without cursor
                 assistantDiv.innerHTML = marked.parse(assistantMessage);
+                transcript.push({ role: 'assistant', text: assistantMessage });
                 eventSource.close();
                 // Re-enable input
                 isStreaming = false;
@@ -335,6 +353,9 @@ messageInput.addEventListener('keypress', (e) => {
 });
 
 // File upload event listeners
+document.getElementById('saveChatBtn').addEventListener('click', saveChat);
+document.getElementById('printChatBtn').addEventListener('click', () => window.print());
+
 fileBtn.addEventListener('click', () => {
     fileInput.click();
 });

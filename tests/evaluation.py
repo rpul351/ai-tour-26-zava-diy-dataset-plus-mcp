@@ -223,6 +223,14 @@ def build_cases(t: dict) -> list[Case]:
         header_ok = bool(re.fullmatch(r"\|[\s:\-|]+\|", block[1]))
         return collect((header_ok, "table has no header separator row"), (len(widths) == 1, "table rows have different numbers of columns"))
 
+    def about_checks(a: str) -> list[str]:
+        return collect(
+            (not re.search(r"(?i)outside what i do|outside my scope|that.s outside|i only help with zava", a), "refused a question about itself"),
+            (not re.search(r"(?im)^\W*scope:", a), "wrote a Scope line"),
+            (len(a.split()) <= 140, "answer is too long"),
+            (not re.search(r"(?i)\bbuilt (by|for) [A-Z][a-z]+ [A-Z]|\bdeveloped by\b|\bcreated by\b", a), "invented who made it"),
+        )
+
     excess = t["network_excess"]
     # Success criteria E3 (seasonal guard) and E6 (honest limits). Rules were fixed before the first run of these cases.
     limits = [
@@ -326,11 +334,31 @@ def build_cases(t: dict) -> list[Case]:
              lambda a: scope(a) + collect(("Window Casing Set" in a, "product not named"), ("no data visible" not in a.lower() and "no stores listed" not in a.lower(), "claimed no data is visible"), (bool(re.search(rf"\b{t['window_casing'][1]}\b", a)), "previous-window figure missing"))),
         # Greetings (tester feedback: saying hi got no hello). Rules fixed before the first run.
         Case("G1", "Greeting", "global", "hi",
-             "A friendly hello that names the agent and says the user is a super manager who sees all 8 stores, with example questions, and never calls it outside scope.",
-             lambda a: collect((a.lower().startswith("hello"), "does not start with hello"), ("Zava Inventory Advisor" in a, "agent not named"), (bool(re.search(r"(?i)all (8|eight) stores", a)), "role and scope not stated"), (bool(re.search(r"(?i)outside what i do|only help", a)) is False, "treated the greeting as out of scope"), ("?" in a or "-" in a, "no example questions"))),
+             "A friendly hello that names the agent and says the user is a super manager who sees all 8 stores, with no example questions, and never calls it outside scope.",
+             lambda a: collect((a.lower().startswith("hello"), "does not start with hello"), ("Zava Inventory Advisor" in a, "agent not named"), (bool(re.search(r"(?i)all (8|eight) stores", a)), "role and scope not stated"), (bool(re.search(r"(?i)outside what i do|only help", a)) is False, "treated the greeting as out of scope"), ("For example" not in a, "greeting lists example questions"))),
         Case("G2", "Greeting", "kirkland", "Hello!",
              "A friendly hello that says the user can see only Kirkland, not all stores.",
              lambda a: collect((a.lower().startswith("hello"), "does not start with hello"), ("Kirkland" in a, "Kirkland not named"), (not re.search(r"(?i)all (8|eight) stores", a), "told a store manager they see all stores"))),
+        # Questions about the agent itself (tester feedback: "chatbot or agent?" was refused). Rules fixed before the first run.
+        # Each must be answered, not refused, with no data tool and no Scope line, and must not claim anything the facts do not say.
+        Case("Q1", "About the agent", "global", "do you consider yourself chatbot or agent?",
+             "Says it is an agent that decides which tools to call, and does not refuse.",
+             lambda a: about_checks(a) + collect((bool(re.search(r"(?i)\bagent\b", a)), "does not say agent"), (bool(re.search(r"(?i)tool", a)), "does not mention tools"))),
+        Case("Q2", "About the agent", "global", "how do you work?",
+             "Explains tools and the database in a few sentences, with no data fetched.",
+             lambda a: about_checks(a) + collect((bool(re.search(r"(?i)tool", a)), "does not mention tools"))),
+        Case("Q3", "About the agent", "global", "is this a RAG system?",
+             "Says partly: vector search for product descriptions, SQL for everything else.",
+             lambda a: about_checks(a) + collect((bool(re.search(r"(?i)partly|in part|only for", a)), "does not say partly"), (bool(re.search(r"(?i)vector|semantic|embedding", a)), "does not mention vector search"), (bool(re.search(r"(?i)sql", a)), "does not mention SQL"))),
+        Case("Q4", "About the agent", "global", "how do I export our chat",
+             "Points to the Save chat and Print / PDF buttons and says it cannot export the chat itself.",
+             lambda a: about_checks(a) + collect(("Save chat" in a, "Save chat button not named"), (bool(re.search(r"(?i)print|pdf", a)), "Print / PDF not named"))),
+        Case("Q5", "About the agent", "global", "who built you?",
+             "Says it does not know, and invents no names.",
+             lambda a: about_checks(a) + collect((bool(re.search(r"(?i)do(n't| not) know|not sure|no information|can(no|')t say", a)), "does not say it does not know"))),
+        Case("Q6", "About the agent", "kirkland", "can you browse the internet?",
+             "Says it cannot, and says nothing that implies it sees other stores.",
+             lambda a: about_checks(a) + collect((bool(re.search(r"(?i)cannot|can't|can not|no internet|do not have", a)), "does not say it cannot"), (not re.search(r"(?i)all (8|eight) stores", a), "told a store manager they see all stores"))),
         *guard,
         *limits,
         # Charts (team report: no bar chart or histogram). Rules fixed before the first run of these cases.

@@ -13,6 +13,10 @@
         <div class="header">
             <h1>Zava DIY Sales Agent</h1>
             <p>Powered by Azure AI Foundry Agent Service</p>
+            <div class="header-actions">
+                <button id="saveChatBtn" title="Save this conversation as a Markdown file">Save chat</button>
+                <button id="printChatBtn" title="Print this conversation, or save it as a PDF">Print / PDF</button>
+            </div>
         </div>
         
         <div class="messages" id="messages"></div>
@@ -25,6 +29,7 @@
         </div>
     </div>
 
+    <script src="/static/transcript.js"></script>
     <script src="/static/chat.js"></script>
 </body>
 </html>

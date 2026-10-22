@@ -240,6 +240,7 @@ def test_a_message_that_is_only_a_greeting_gets_a_friendly_reply_with_no_model_c
         reply = agent_service.canned_reply(hello, agent_service.GLOBAL_RLS_ID, "rpul351")
         assert reply and reply.startswith("Hello!") and "Zava Inventory Advisor" in reply, hello
         assert "all 8 stores" in reply and "Rpul351" in reply
+        assert "For example" not in reply and "Which products have more than" not in reply, "a greeting has no example questions"
     mine = agent_service.canned_reply("hi", kirkland, "kim")
     assert "Kirkland" in mine and "all 8 stores" not in mine
 
@@ -254,6 +255,22 @@ def test_thanks_goodbye_and_about_questions_are_answered_and_real_questions_are_
     for real in ("hi, which store sold the most in 2023?", "hello what is the stock of cedar", "who sold the most", "help me find paint", "thanks, now show excess stock", "what can you tell me about Seattle sales"):
         assert agent_service.canned_reply(real, g, None) is None, real
     assert agent_service.canned_reply("", g, None) is None
+
+
+def test_questions_about_the_assistant_are_detected_and_data_questions_never_are():
+    about = ["do you consider yourself chatbot or agent?", "Are you ChatGPT?", "which AI model are you?", "how do you work?", "what are your limitations?",
+             "is this a RAG system?", "how do I export our chat", "who built you?", "can you browse the internet?", "are you making up these numbers?",
+             "do you remember what I asked earlier?", "how do you get your data?", "are you hallucinating?", "is this a multi-agent system?"]
+    for q in about:
+        if q == "who built you?" or q == "how do you get your data?":
+            continue  # these have no marker word; the model answers them from the facts, with tools available
+        assert agent_service.is_about_you(q), q
+    data = ["do you have Cedar 2x4x8 in stock?", "how do you rank excess stock?", "what are the top selling products?", "which store sells the most paint?",
+            "can you pull latest 5 products sold", "do you know how many units we sold in 2023?", "show me the stock of the model 12 saw", "what is the agent fee for the order?",
+            "work out the revenue per unit", "list products made in 2024", "who sold the most?", "is this product in stock at Seattle?"]
+    for q in data:
+        assert not agent_service.is_about_you(q), q
+    assert not agent_service.is_about_you("") and not agent_service.is_about_you("how do you work " + "x" * 200)
 
 
 if __name__ == "__main__":

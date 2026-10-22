@@ -72,7 +72,7 @@ It checks that the ports are free, that the access list and the access codes exi
 (cd src/python/workshop && python test_answer_verifier.py && python test_agent_verification_loop.py && python test_access.py)
 python -m unittest tests.test_inventory_advisor            # tool tests against the live database
 RUN_AGENT_TESTS=1 python -m unittest tests.test_inventory_advisor   # also runs the agent (calls the model)
-python -m tests.evaluation                                  # 44 questions, writes docs/evaluation.md (about 12 minutes)
+python -m tests.evaluation                                  # 50 questions, writes docs/evaluation.md (about 12 minutes)
 python tests/audit_grounding.py                              # 29 answers: any product name, SKU or number not backed by a tool result? (about 3 minutes)
 ```
 
@@ -101,6 +101,7 @@ Without `ACCESS_LIST_FILE` the service uses the single `RLS_USER_ID` from `.env`
 - Conversations are held in memory and are lost when the service restarts.
 - The dev container database uses the course's published `store_manager` password (it appears in the course files and in `tests/`). It is a local development credential only. Do not reuse it in Azure; use a new password from a secret store there.
 - Charts: ask for a bar chart, line chart or histogram. The agent draws it only from figures its data tools returned, and the image is served at `/charts/<name>` behind the login. Charts older than 24 hours are deleted.
+- Saving a chat: the page header has **Save chat** (downloads the conversation as a Markdown file) and **Print / PDF**. Both run in the browser. The agent also answers questions about itself (what it is, which model, how it works, its limits) from a fixed fact sheet.
 - Tables: ask for a table, or for extra and calculated columns (a ratio, a difference, a percentage). The agent draws a markdown table in the chat. A calculated cell is accepted only if it can be recomputed from other numbers in its row or from a tool result.
 - Downloads: ask for a CSV or PDF of a result. The agent writes the file only from figures its data tools returned, and the link is served at `/exports/<name>` behind the login. A file holds only the rows a tool returned (tool results are capped), and files older than 24 hours are deleted. It cannot email files.
 - A store manager can see only one store, so a comparison with other stores or the network is answered for their own store only.
