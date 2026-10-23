@@ -111,6 +111,10 @@ Ranks pairs of products in the same order, with orders together, how many times 
 
 Lists the newest order lines, newest first, one row per order line. The order is fixed (order date, then order id, then line id), so the same question gives the same lines. The summary gives `latest_order_date` and `order_lines_on_that_date`, because many lines share the newest date. Optional `store_name`, `category_name`, `skus`, `top_n` (at most 50). Orders dated after today are excluded.
 
+### `find_products`
+
+Finds products by SKU (`sku_starts_with`, `sku_ends_with`, `sku_contains`), by `name_contains` (every word must appear; a plural "s" is ignored) or by `category_name`, and gives each product's stock, summed by the database over every match. Optional `store_name`, `by_store` (stock per store), `include_details` (cost and description) and `top_n` (default 50, at most 100). The summary gives `products_matching` and `products_returned`, so a long list is never silently cut short. A typed `%` or `_` matches itself.
+
 ### `year_over_year_summary`
 
 Compare one calendar year with another.

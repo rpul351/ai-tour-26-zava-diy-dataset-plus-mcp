@@ -33,6 +33,25 @@ CASE_TIMEOUT_SECONDS = 300
 DECLINE = re.compile(r"(?i)\b(cannot|can't|can not|unable|not able|won't|will not|do not|don't|no data|not visible|only see|outside|not available|can only|only help|only handle|aren't available|isn't available)\b")
 
 
+def hygiene(answer: str) -> list[str]:
+    """Checks on every answer: it reads like a chat reply, not like the system behind it. Written before the first run."""
+    plain = re.sub(r"\]\([^)]*\)", "](link)", answer)
+    found = []
+    if re.search(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b", plain):
+        found.append("shows an internal field name")
+    if re.search(r"(?i)my calculation", answer):
+        found.append("shows a calculation line")
+    if re.search(r"\d{4}-\d\d-\d\dT\d\d:\d\d", answer):
+        found.append("shows a raw timestamp")
+    scope = re.search(r"(?im)^\W*scope:[^\n]*\n+", answer)
+    if scope:
+        lead = answer[scope.end():].split("\n\n")[0]
+        figures = re.sub(r"\b\d{4}-\d\d-\d\d\b|\b(19|20)\d\d\b", "", lead)
+        if re.search(r"\d", figures) and not lead.lstrip().startswith(("|", "-", "*", ">")) and "**" not in answer:
+            found.append("nothing important is bold")
+    return found
+
+
 @dataclass
 class Case:
     id: str
@@ -104,6 +123,15 @@ async def team_ground_truth() -> dict:
     """Independent figures for the questions the team asked, computed without the agent's tools."""
     import statistics
 
+    async def sku_stock(where: str, store: int | None = None) -> list[tuple[str, str, int]]:
+        rows = await sql_rows(
+            GLOBAL,
+            "SELECT p.sku, p.product_name, COALESCE(SUM(i.stock_level) FILTER (WHERE $1::int IS NULL OR i.store_id = $1), 0) s FROM retail.products p "
+            f"LEFT JOIN retail.inventory i USING (product_id) WHERE {where} GROUP BY p.sku, p.product_name ORDER BY p.sku",
+            store,
+        )
+        return [(r["sku"], r["product_name"], int(r["s"])) for r in rows]
+
     cover_rows = await sql_rows(
         GLOBAL,
         "SELECT p.product_name, st.s AS stock, COALESCE(sa.q, 0) AS sold FROM "
@@ -149,6 +177,7 @@ async def team_ground_truth() -> dict:
     )
     revenue_per_unit = {r["store_name"]: f"{float(r['r']) / float(r['u']):.2f}" for r in per_store}
     seattle_id = (await sql_rows(GLOBAL, "SELECT store_id FROM retail.stores WHERE store_name = 'Zava Retail Seattle'"))[0]["store_id"]
+    kirkland_store = (await sql_rows(GLOBAL, "SELECT store_id FROM retail.stores WHERE store_name = 'Zava Retail Kirkland'"))[0]["store_id"]
     today = (await sql_rows(GLOBAL, "SELECT CURRENT_DATE d"))[0]["d"]
     month_start, days = today.replace(day=1), today.day
     prev_start = (month_start - timedelta(days=1)).replace(day=1)
@@ -188,6 +217,10 @@ async def team_ground_truth() -> dict:
     ))[0]["product_name"]
     return {
         "month_days": days,
+        "sku_end_001": await sku_stock("p.sku LIKE '%001'"),
+        "sku_end_001_kirkland": await sku_stock("p.sku LIKE '%001'", kirkland_store),
+        "phillips_seattle": (await sku_stock("p.sku = 'HTSD010001'", seattle_id))[0],
+        "window_casing_stock": (await sku_stock("p.product_name ILIKE 'window casing set%'"))[0][2],
         "recent_seattle": [(r["product_name"], r["sku"]) for r in recent],
         "recent_date": recent[0]["order_date"],
         "recent_count": int(recent_count),
@@ -355,6 +388,23 @@ def build_cases(t: dict) -> list[Case]:
                  (a.find(t["recent_seattle"][0][0]) <= a.find(t["recent_seattle"][-1][0]) or t["recent_seattle"][0][0] == t["recent_seattle"][-1][0], "newest line is not first"),
                  (str(t["recent_date"]) in a, "latest date not stated"),
                  (has(a, t["recent_count"]), "count of lines on the latest date not stated"))),
+        # Product lookups (a tester asked for stock of SKUs ending 001 and got different products, partial sums and extra workings). Rules fixed before the first run.
+        Case("F1", "Lookup", "global", "Can you fetch the stock of sku with us ending 001",
+             f"All {len(t['sku_end_001'])} products whose SKU ends with 001, each with its stock, matching independent SQL, and no invented prefix.",
+             lambda a: scope(a) + no_offer(a) + [f"missing {s} {n}" for s, _, n in t["sku_end_001"] if s not in a or not has(a, n)] + collect(("My calculation" not in a, "showed calculation lines nobody asked for"))),
+        Case("F2", "Lookup", "global", "how much stock of Phillips Screwdriver Set do we have in Seattle",
+             f"{t['phillips_seattle'][2]:,} units in Seattle in a short answer, with no cost, description, workings or advice.",
+             lambda a: scope(a) + collect((has(a, t["phillips_seattle"][2]), "stock figure missing"), (len(a.split()) <= 70, "answer is too long"),
+                                          (not re.search(r"(?i)description|\bcost\b|my calculation|recommend|transfer", re.sub(r"(?im)^more on request.*$", "", a)), "added detail nobody asked for"))),
+        Case("F3", "Lookup", "global", "stock of windows casing set",
+             f"Finds Window Casing Set although the user typed 'windows', with its stock {t['window_casing_stock']:,}.",
+             lambda a: scope(a) + collect((has(a, t["window_casing_stock"]), "stock figure missing"))),
+        Case("F4", "Lookup", "global", "stock of sku ZZZ999",
+             "Says no product has that SKU and gives no stock figure.",
+             lambda a: collect((bool(re.search(r"(?i)no product|not found|could not find|couldn.t find|no match|does not exist|did not find|didn.t find|no sku|not in the catalogue", a)), "did not say it was not found"), (not re.search(r"\d[\d,]*\s*units", a), "invented a stock figure"))),
+        Case("F5", "Lookup", "kirkland", "stock of products with sku ending 001",
+             f"All {len(t['sku_end_001_kirkland'])} products with Kirkland's own stock, matching independent SQL, and no other store's figures.",
+             lambda a: scope(a) + no_offer(a) + [f"missing {s} {n}" for s, _, n in t["sku_end_001_kirkland"] if s not in a or not has(a, n)]),
         # Greetings (tester feedback: saying hi got no hello). Rules fixed before the first run.
         Case("G1", "Greeting", "global", "hi",
              "A friendly hello that names the agent and says the user is a super manager who sees all 8 stores, with no example questions, and never calls it outside scope.",
@@ -452,7 +502,7 @@ async def run_case(case: Case, sem: asyncio.Semaphore) -> dict:
         except Exception as exc:  # noqa: BLE001 - a failed case is a result, not a crash
             error = f"{type(exc).__name__}: {exc}"
         seconds = round(time.perf_counter() - started, 1)
-        reasons = [error] if error else case.check(answer.replace("\u2019", "'"))
+        reasons = [error] if error else case.check(answer.replace("\u2019", "'").replace("**", "")) + hygiene(answer)
         return {
             "id": case.id, "category": case.category, "identity": case.identity, "question": case.question,
             "expected": case.expected, "answer": answer, "tools": tools, "seconds": seconds,

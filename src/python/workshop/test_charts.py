@@ -257,12 +257,89 @@ def test_thanks_goodbye_and_about_questions_are_answered_and_real_questions_are_
     assert agent_service.canned_reply("", g, None) is None
 
 
+def test_a_long_product_lookup_must_be_shown_in_full():
+    import json as _json
+
+    rows = [{"sku": f"SKU{i:03d}", "product_name": f"Product {i}", "total_stock": i} for i in range(1, 46)]
+    result = _json.dumps({"summary": {"products_matching": 45, "products_returned": 45, "all_returned": True}, "results": rows})
+    full = "\n".join(f"| {r['sku']} | {r['product_name']} | {r['total_stock']} |" for r in rows)
+    first_ten = "\n".join(f"| {r['sku']} | {r['product_name']} | {r['total_stock']} |" for r in rows[:10])
+    assert agent_service.lookup_problem([result], full) == []
+    problem = agent_service.lookup_problem([result], first_ten)
+    assert len(problem) == 1 and "45" in problem[0] and "only 10" in problem[0]
+    assert agent_service.lookup_problem([result], first_ten + "\n[CSV](/exports/e1.csv)") == []  # the file holds the rest
+    short = _json.dumps({"summary": {"products_returned": 5}, "results": rows[:5]})
+    assert agent_service.lookup_problem([short], "| SKU001 |") == []  # a short list is the model's to trim
+    assert agent_service.lookup_problem(["not json", "{}"], first_ten) == []
+    assert agent_service.lookup_problem([result], "There are 45 products.", "how many products end with 001") == []
+    assert agent_service.lookup_problem([result], "There are 45 products.", "stock of sku ending 001") != []
+    assert agent_service.lookup_problem([result], "There are 45 products.", "products with SKU ...001 and how many do we hold") != []  # a list was asked for too
+
+
+def test_a_table_row_missing_its_closing_pipe_is_repaired():
+    broken = "| A | B |\n|:---|---:|\n| x | 1 |\n| y | **near**."
+    fixed = agent_service.repair_tables(broken)
+    assert fixed.splitlines()[-1] == "| y | **near**. |" and fixed.splitlines()[2] == "| x | 1 |"
+    assert agent_service.repair_tables("Text\n| not a table") == "Text\n| not a table"  # only a row that follows a table row
+
+
+def test_required_facts_must_appear_in_the_answer():
+    import json as _json
+
+    yoy = _json.dumps({"totals": {"units": 98952, "units_compare": 90308}})
+    sales = _json.dumps({"window": {"start": "2025-10-24", "end": "2026-10-23"}, "results": [{"sku": "A"}]})
+    ask = "How did 2024 compare with 2023?"
+    assert agent_service.required_facts_problem(ask, [yoy], "**98,952 units** in 2024, up 8,644.")
+    assert not agent_service.required_facts_problem(ask, [yoy], "**98,952 units** in 2024 against **90,308** in 2023.")
+    assert not agent_service.required_facts_problem("units sold by Seattle in 2024", [yoy], "Seattle sold 5.")  # not a comparison question
+    assert agent_service.required_facts_problem("top sellers", [sales], "Over the last 12 months.")
+    assert not agent_service.required_facts_problem("top sellers", [sales], "From 2025-10-24 to 2026-10-23.")
+    assert not agent_service.required_facts_problem(ask, ["not json", "[]"], "x")
+
+
+def test_a_download_path_written_as_plain_text_becomes_a_link():
+    path = "/exports/e" + "0123456789abcdef0123" + ".csv"
+    assert agent_service.tidy_answer(f"Download the file (CSV, 40 rows): {path}") == f"Download the file (CSV, 40 rows): [Download]({path})"
+    linked = f"[Download]({path})"
+    assert agent_service.tidy_answer(linked) == linked  # an existing link is left alone
+
+
+def test_long_decimals_are_shortened_for_the_reader():
+    shown = agent_service.tidy_answer("| a | 858.2182539682539683 | 0.30182450745672958871684715409097 | 1.5 | 12.25 |\n[f](/exports/e1.5555555.csv)")
+    assert "858.22" in shown and "0.3018" in shown and "1.5 |" in shown and "12.25" in shown
+    assert "/exports/e1.5555555.csv" in shown  # a link target is never rewritten
+
+
+def test_the_reader_sees_no_workings_timestamps_or_field_names():
+    raw = ("Scope: all 8 stores\n\nSeattle holds 1,782 units, snapshot 2026-10-23T05:13:34.716226+00:00 (UTC), with clearance_guard set.\n\n"
+           "Notes:\n- My calculation: 1 + 2 = 3\n- My calculation: 4 * 5 = 20\n\n![chart](/charts/c1_a.png)")
+    shown = agent_service.tidy_answer(raw)
+    assert "My calculation" not in shown and "Notes:" not in shown
+    assert "2026-10-23," in shown and "T05" not in shown and "UTC" not in shown
+    assert "clearance guard" in shown and "clearance_guard" not in shown
+    assert "(/charts/c1_a.png)" in shown  # a link target is never rewritten
+    keep = "Scope: x\n\nNotes:\n- Value at cost is an upper bound.\n- My calculation: 1 + 1 = 2"
+    assert agent_service.tidy_answer(keep) == "Scope: x\n\nNotes:\n- Value at cost is an upper bound."  # real notes stay
+
+
+def test_key_figures_in_the_opening_paragraph_are_bold_unless_the_model_already_bolded():
+    shown = agent_service.bold_key_figures("Scope: x\n\nIn 2023, Seattle sold 25,349 units at 12:30 on 2026-10-23 for $9.50 (up 5.2%).\n\nSecond paragraph 77.")
+    assert shown == "Scope: x\n\nIn 2023, Seattle sold **25,349** units at 12:30 on 2026-10-23 for **$9.50** (up **5.2%**).\n\nSecond paragraph 77."
+    already = "Scope: x\n\n**Seattle** sold 25,349 units."
+    assert agent_service.bold_key_figures(already) == already
+    table = "Scope: x\n\n| a | 12 |\n|---|---|"
+    assert agent_service.bold_key_figures(table) == table
+    assert agent_service.bold_key_figures("SKU HTSD010001 has 5 units") == "SKU HTSD010001 has **5** units"
+
+
 def test_a_scope_line_is_dropped_only_when_no_data_tool_was_used():
     text = "Scope: all 8 stores\n\nI do not know who built me."
     assert agent_service.without_scope_line(text, False) == "I do not know who built me."
     assert agent_service.without_scope_line(text, True) == text
     assert agent_service.without_scope_line("Scope: Kirkland", False) == "Scope: Kirkland"  # never leave an empty answer
     assert agent_service.without_scope_line("No scope here.", False) == "No scope here."
+    assert agent_service.without_scope_line("Scope: all 8 stores\n\nYou can see **all 8 stores** and I use SQL.", False) == "You can see **all 8 stores** and I use SQL."
+    assert agent_service.without_scope_line("Scope: none\n\nI am the **gpt-5-mini** model.", False) == "I am the **gpt-5-mini** model."  # an empty scope goes even with digits
     figures = "Scope: Kirkland\n\nUnits were 90,308."
     assert agent_service.without_scope_line(figures, False) == figures  # a follow-up that quotes figures keeps its Scope line
 

@@ -110,7 +110,7 @@ bash scripts/run_agent.sh
 
 Wait for the line `Ready.` Leave this terminal open. Then open http://127.0.0.1:8005 and sign in with your code. Add `?debug=1` to the address to see every tool call the agent makes.
 
-Check the back end at http://127.0.0.1:8006/health. It should say `healthy`, with 16 tools and `semantic_search: ok`.
+Check the back end at http://127.0.0.1:8006/health. It should say `healthy`, with 17 tools and `semantic_search: ok`.
 
 To stop: press `Ctrl+C` in that terminal, or run `bash scripts/run_agent.sh stop` from another one. To check: `bash scripts/run_agent.sh status`.
 

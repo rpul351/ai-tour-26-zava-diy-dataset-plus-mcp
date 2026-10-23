@@ -2,33 +2,68 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Zava DIY Sales Agent</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="color-scheme" content="light dark">
+    <meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+    <title>Zava Inventory Advisor</title>
     <link rel="icon" type="image/x-icon" href="/favicon.ico">
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-    <div class="chat-container">
-        <div class="header">
-            <h1>Zava DIY Sales Agent</h1>
-            <p>Powered by Azure AI Foundry Agent Service</p>
-            <div class="header-actions">
-                <button id="saveChatBtn" title="Save this conversation as a Markdown file">Save chat</button>
-                <button id="printChatBtn" title="Print this conversation, or save it as a PDF">Print / PDF</button>
+    <div class="app">
+        <header class="topbar">
+            <div class="brand">
+                <span class="brand-mark" aria-hidden="true">Z</span>
+                <div class="brand-text">
+                    <h1>Zava Inventory Advisor</h1>
+                    <p>Live stock and sales, read-only</p>
+                </div>
             </div>
-        </div>
-        
-        <div class="messages" id="messages"></div>
-        
-        <div class="input-container">
-            <input type="file" id="fileInput" accept=".txt,.pdf,.doc,.docx,.md" style="display: none;" />
-            <button id="fileBtn" title="Upload file">📎</button>
-            <input type="text" id="messageInput" placeholder="Type your message or upload a file..." />
-            <button id="sendBtn">Send</button>
-        </div>
+            <nav class="actions" aria-label="Conversation">
+                <button type="button" id="newChatBtn" class="ghost" title="Start a new conversation" aria-label="New chat">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span>New chat</span>
+                </button>
+                <button type="button" id="saveChatBtn" class="ghost" title="Save this conversation as a Markdown file" aria-label="Save chat">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7.5 11 12 15.5 16.5 11M5 19h14"/></svg><span>Save</span>
+                </button>
+                <button type="button" id="printChatBtn" class="ghost" title="Print this conversation, or save it as a PDF" aria-label="Print or save as PDF">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 9V4h10v5M7 17H5a1 1 0 0 1-1-1v-5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v5a1 1 0 0 1-1 1h-2M7 14h10v6H7z"/></svg><span>Print</span>
+                </button>
+            </nav>
+        </header>
+
+        <main class="messages" id="messages" role="log" aria-live="polite" aria-label="Conversation">
+            <section class="welcome" id="welcome">
+                <span class="brand-mark large" aria-hidden="true">Z</span>
+                <h2>What would you like to know?</h2>
+                <p>Ask about stock, sales, products and seasonal patterns. Answers come from the live Zava data.</p>
+                <div class="chips" role="list">
+                    <button type="button" class="chip" role="listitem" data-prompt="Which products have more than 5 years of stock?"><strong>Excess stock</strong><span>Which products have more than 5 years of stock?</span></button>
+                    <button type="button" class="chip" role="listitem" data-prompt="What are the top selling products in the last 12 months?"><strong>Best sellers</strong><span>What are the top selling products in the last 12 months?</span></button>
+                    <button type="button" class="chip" role="listitem" data-prompt="Where is the most capital tied up in excess stock? Show the top 5 as a table."><strong>Capital tied up</strong><span>Where is the most capital tied up? Top 5 as a table.</span></button>
+                    <button type="button" class="chip" role="listitem" data-prompt="Which stores follow the company's seasonal pattern most closely?"><strong>Seasonal pattern</strong><span>Which stores follow the seasonal pattern most closely?</span></button>
+                </div>
+            </section>
+        </main>
+
+        <footer class="composer-wrap">
+            <form class="composer" id="composer" autocomplete="off">
+                <input type="file" id="fileInput" accept=".txt,.pdf,.doc,.docx,.md" hidden />
+                <button type="button" id="fileBtn" class="icon" title="Attach a file" aria-label="Attach a file">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m20 11.5-8 8a5 5 0 0 1-7-7l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7L9.5 17.2a1.7 1.7 0 0 1-2.4-2.4l7.4-7.4"/></svg>
+                </button>
+                <textarea id="messageInput" rows="1" placeholder="Ask about stock or sales" aria-label="Message" enterkeyhint="send" maxlength="4000"></textarea>
+                <button type="submit" id="sendBtn" class="send" title="Send" aria-label="Send">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5"/></svg>
+                </button>
+            </form>
+            <p class="fineprint">Figures are a snapshot of the live data. Check important decisions.</p>
+        </footer>
     </div>
 
+    <script src="/static/marked.min.js"></script>
+    <script src="/static/render.js"></script>
     <script src="/static/transcript.js"></script>
     <script src="/static/chat.js"></script>
 </body>

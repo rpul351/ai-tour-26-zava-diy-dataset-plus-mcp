@@ -69,10 +69,12 @@ It checks that the ports are free, that the access list and the access codes exi
 ### Test it
 
 ```bash
-(cd src/python/workshop && python test_answer_verifier.py && python test_agent_verification_loop.py && python test_access.py)
+(cd src/python/workshop && python test_charts.py && python test_answer_verifier.py && python test_agent_verification_loop.py && python test_exports.py && python test_access.py)
+node tests/test_render.js && node tests/test_transcript.js    # page rendering (including script-injection attempts) and the saved chat
 python -m unittest tests.test_inventory_advisor            # tool tests against the live database
 RUN_AGENT_TESTS=1 python -m unittest tests.test_inventory_advisor   # also runs the agent (calls the model)
-python -m tests.evaluation                                  # 50 questions, writes docs/evaluation.md (about 12 minutes)
+python -m tests.evaluation                                  # 56 questions, writes docs/evaluation.md (about 13 minutes)
+python tests/lookup_battery.py 714                          # 17 randomised product lookups checked against SQL; try other seeds (about $0.15)
 python tests/audit_grounding.py                              # 29 answers: any product name, SKU or number not backed by a tool result? (about 3 minutes)
 ```
 

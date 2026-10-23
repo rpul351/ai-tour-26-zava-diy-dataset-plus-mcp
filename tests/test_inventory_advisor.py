@@ -308,6 +308,45 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(wrong["results"], [])
         self.assertIn("not visible", wrong["message"])
 
+    async def test_find_products_by_sku_suffix_is_complete_and_matches_independent_sql(self):
+        # The friend's question: "stock of sku ending 001". A hand-written query once returned 3 of 45 products with partial sums.
+        truth = await sql_rows(
+            GLOBAL,
+            "SELECT p.sku, COALESCE(SUM(i.stock_level), 0) AS s FROM retail.products p LEFT JOIN retail.inventory i USING (product_id) "
+            "WHERE p.sku LIKE '%001' GROUP BY p.sku ORDER BY p.sku",
+        )
+        out = await self.call("find_products", GLOBAL, sku_ends_with="001", top_n=100)
+        self.assertEqual(out["summary"]["products_matching"], len(truth))
+        self.assertTrue(out["summary"]["all_returned"])
+        self.assertEqual([(r["sku"], r["total_stock"]) for r in out["results"]], [(r["sku"], int(r["s"])) for r in truth])
+        short = await self.call("find_products", GLOBAL, sku_ends_with="001", top_n=5)
+        self.assertEqual((short["summary"]["products_matching"], short["summary"]["products_returned"], short["summary"]["all_returned"]), (len(truth), 5, False))
+        self.assertEqual(out, await self.call("find_products", GLOBAL, sku_ends_with=" 001 ", top_n=100))  # same answer however it is typed
+        self.assertEqual((await self.call("find_products", GLOBAL, sku_contains="US001"))["results"], [])  # a made-up prefix finds nothing, honestly
+        own = await self.call("find_products", KIRKLAND, sku_ends_with="001", by_store=True, include_details=True, top_n=3)
+        self.assertEqual(own["scope"]["stores_included"], ["Zava Retail Kirkland"])
+        self.assertTrue(all(len(r["stock_by_store"]) <= 1 and "description" in r and "cost" in r for r in own["results"]))
+        for phrase in ("us ending 001", "ends with 001", "sku ending in 001", "  001 ", "001?", "...001", "(001)"):  # a phrase passed as the pattern still means 001
+            phrased = await self.call("find_products", GLOBAL, sku_ends_with=phrase, top_n=100)
+            self.assertEqual([r["sku"] for r in phrased["results"]], [r["sku"] for r in out["results"]], phrase)
+        self.assertEqual((await self.call("find_products", GLOBAL, sku_starts_with="starting with HTSD"))["summary"]["products_matching"], 5)
+        percent = await self.call("find_products", GLOBAL, sku_starts_with="%")
+        self.assertEqual(percent["results"], [])  # a typed % is not a wildcard
+        words = await self.call("find_products", GLOBAL, name_contains="windows casing set")
+        self.assertEqual([r["product_name"] for r in words["results"]], ["Window Casing Set"])  # plural and word order do not matter
+        self.assertEqual((await self.call("find_products", GLOBAL, name_contains="set casing window"))["summary"]["products_matching"], 1)
+        self.assertEqual((await self.call("find_products", GLOBAL, name_contains="?!"))["results"], [])
+        self.assertIn("semantic_search_products", " ".join((await self.call("find_products", GLOBAL, sku_ends_with="ZZZ999"))["notes"]))
+        paint = await self.call("find_products", GLOBAL, description_contains="paint", top_n=100)
+        truth = await sql_rows(GLOBAL, "SELECT sku FROM retail.products WHERE product_description ILIKE '%paint%' ORDER BY sku")
+        self.assertEqual([r["sku"] for r in paint["results"]], [r["sku"] for r in truth])
+        self.assertGreater(len(truth), 0)
+        self.assertIn("at least one", (await self.call("find_products", GLOBAL))["message"])
+        self.assertIn("Unknown category", (await self.call("find_products", GLOBAL, category_name="NOPE"))["message"])
+        wrong = await self.call("find_products", SEATTLE, sku_ends_with="001", store_id=6)
+        self.assertEqual(wrong["results"], [])
+        self.assertIn("not visible", wrong["message"])
+
     async def test_every_store_tool_takes_a_store_name_and_agrees_with_the_store_id(self):
         seattle = (await sql_rows(GLOBAL, "SELECT store_id FROM retail.stores WHERE store_name = 'Zava Retail Seattle'"))[0]["store_id"]
         for tool, args in (

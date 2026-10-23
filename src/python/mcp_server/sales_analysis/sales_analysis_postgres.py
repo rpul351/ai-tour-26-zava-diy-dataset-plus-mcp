@@ -19,6 +19,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
@@ -2302,6 +2303,144 @@ class PostgreSQLSchemaProvider:
             )
         except Exception as e:
             return json.dumps({"error": f"Recent order lines failed: {e!s}", "results": [], "row_count": 0}, indent=2, default=str)
+        finally:
+            if conn:
+                await self.release_connection(conn)
+
+    @staticmethod
+    def _like(text: str) -> str:
+        """Escape LIKE wildcards so a typed '_' or '%' matches itself."""
+        return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+    _SKU_FILLER = {"us", "ending", "ends", "end", "with", "starts", "starting", "start", "begins", "begin", "beginning", "containing", "contains", "contain", "sku", "skus", "id", "ids", "code", "codes", "number", "product", "products", "the", "a", "an", "of", "in", "that", "which"}
+
+    @classmethod
+    def _clean_sku(cls, text: Optional[str], take: str) -> Optional[str]:
+        """A SKU pattern is one token. Drop punctuation around it; if the model passed a phrase such as "us ending 001", keep the code and drop the filler words."""
+        if not text:
+            return text
+        core = re.sub(r"^[^A-Za-z0-9]+|[^A-Za-z0-9]+$", "", text.strip())  # "BO0?" or "...001" is a code with punctuation around it
+        if not core:
+            return text
+        if not re.search(r"\s", core):
+            return core
+        words = [w for w in re.findall(r"[A-Za-z0-9]+", text) if w.lower() not in cls._SKU_FILLER]
+        if not words:
+            return text
+        return words[-1] if take == "last" else words[0] if take == "first" else max(words, key=len)
+
+    async def find_products(
+        self,
+        rls_user_id: str,
+        sku_starts_with: Optional[str] = None,
+        sku_ends_with: Optional[str] = None,
+        sku_contains: Optional[str] = None,
+        name_contains: Optional[str] = None,
+        description_contains: Optional[str] = None,
+        category_name: Optional[str] = None,
+        store_id: Optional[int] = None,
+        store_name: Optional[str] = None,
+        by_store: bool = False,
+        include_details: bool = False,
+        top_n: int = 50,
+    ) -> str:
+        """Find products by SKU pattern, name or category and give the stock held, counted in full by the database."""
+        conn = None
+        try:
+            sku_starts_with = self._clean_sku(sku_starts_with, "first")
+            sku_ends_with = self._clean_sku(sku_ends_with, "last")
+            sku_contains = self._clean_sku(sku_contains, "longest")
+            filters = {"sku_starts_with": sku_starts_with, "sku_ends_with": sku_ends_with, "sku_contains": sku_contains, "name_contains": name_contains, "description_contains": description_contains, "category_name": category_name}
+            if not any(v and v.strip() for v in filters.values()):
+                return json.dumps({"results": [], "message": "Give at least one of sku_starts_with, sku_ends_with, sku_contains, name_contains or category_name."}, indent=2)
+            conn = await self.get_connection()
+            await conn.execute("SELECT set_config('app.current_rls_user_id', $1, false)", rls_user_id)
+            store_id, refusal = await self._resolve_store(conn, store_id, store_name)
+            if refusal:
+                return refusal
+            scope = await self._describe_scope(conn, store_id)
+            if category_name and not await conn.fetchval(
+                "SELECT 1 FROM retail.categories WHERE UPPER(category_name) = UPPER($1::text)", category_name
+            ):
+                valid = [r["category_name"] for r in await conn.fetch("SELECT category_name FROM retail.categories ORDER BY 1")]
+                return json.dumps({"results": [], "scope": scope, "message": "Unknown category.", "valid_categories": valid}, indent=2, default=str)
+
+            args: List[Any] = []
+
+            def bind(value: Any) -> str:
+                args.append(value)
+                return f"${len(args)}"
+
+            conditions = ["TRUE"]
+            if sku_starts_with and sku_starts_with.strip():
+                conditions.append(f"UPPER(p.sku) LIKE {bind(self._like(sku_starts_with.strip().upper()) + '%')}::text")
+            if sku_ends_with and sku_ends_with.strip():
+                conditions.append(f"UPPER(p.sku) LIKE {bind('%' + self._like(sku_ends_with.strip().upper()))}::text")
+            if sku_contains and sku_contains.strip():
+                conditions.append(f"UPPER(p.sku) LIKE {bind('%' + self._like(sku_contains.strip().upper()) + '%')}::text")
+            # Every typed word must appear; a trailing plural 's' is ignored, so "windows casing set" finds "Window Casing Set".
+            for typed, column in ((name_contains, "p.product_name"), (description_contains, "p.product_description")):
+                if not (typed and typed.strip()):
+                    continue
+                for word in re.findall(r"[A-Za-z0-9]+", typed.upper()) or [None]:
+                    if word is None:
+                        conditions.append("FALSE")
+                        continue
+                    stem = word[:-1] if len(word) > 3 and word.endswith("S") and not word.endswith("SS") else word
+                    conditions.append(f"UPPER({column}) LIKE {bind('%' + self._like(stem) + '%')}::text")
+            if category_name:
+                conditions.append(f"UPPER(c.category_name) = UPPER({bind(category_name)}::text)")
+            matching = (
+                "WITH m AS (SELECT p.product_id, p.sku, p.product_name, c.category_name, p.base_price, p.cost, p.product_description "
+                "FROM retail.products p JOIN retail.categories c ON c.category_id = p.category_id WHERE " + " AND ".join(conditions) + ")"
+            )
+            store_value = bind(store_id)
+            total_matches = await conn.fetchval(matching + " SELECT COUNT(*) FROM m", *args[:-1])
+            rows = await conn.fetch(
+                matching
+                + f""", st AS (SELECT i.product_id, SUM(i.stock_level)::bigint AS units, COUNT(*)::int AS stores_stocking FROM retail.inventory i
+                           WHERE i.product_id IN (SELECT product_id FROM m) AND ({store_value}::int IS NULL OR i.store_id = {store_value}::int) GROUP BY i.product_id)
+                   SELECT m.*, COALESCE(st.units, 0) AS total_stock, COALESCE(st.stores_stocking, 0) AS stores_stocking
+                   FROM m LEFT JOIN st USING (product_id) ORDER BY m.sku LIMIT {bind(top_n)}::int""",
+                *args,
+            )
+            by_store_rows: Dict[int, List[Dict[str, Any]]] = {}
+            if by_store and rows:
+                for r in await conn.fetch(
+                    "SELECT i.product_id, s.store_name, i.stock_level FROM retail.inventory i JOIN retail.stores s ON s.store_id = i.store_id "
+                    "WHERE i.product_id = ANY($1::int[]) AND ($2::int IS NULL OR i.store_id = $2::int) ORDER BY s.store_name",
+                    [r["product_id"] for r in rows],
+                    store_id,
+                ):
+                    by_store_rows.setdefault(r["product_id"], []).append({"store": r["store_name"], "stock": r["stock_level"]})
+            results = []
+            for r in rows:
+                item: Dict[str, Any] = {
+                    "sku": r["sku"], "product_name": r["product_name"], "category": r["category_name"],
+                    "price": float(r["base_price"]), "total_stock": int(r["total_stock"]),
+                }
+                if include_details:
+                    item["cost"] = float(r["cost"])
+                    item["description"] = r["product_description"]
+                if by_store:
+                    item["stock_by_store"] = by_store_rows.get(r["product_id"], [])
+                results.append(item)
+            return json.dumps(
+                {
+                    "scope": scope,
+                    "parameters": {k: v.strip() for k, v in filters.items() if v and v.strip()} | {"store_id": store_id, "top_n": top_n},
+                    "summary": {"products_matching": int(total_matches), "products_returned": len(results), "all_returned": len(results) == int(total_matches)},
+                    "results": results,
+                    "notes": [
+                        "Stock is summed by the database over every row in scope, not over a truncated list. total_stock is units across the stores listed in scope.",
+                        "Ordered by SKU. If all_returned is false, say how many products match and that only the first ones are shown.",
+                    ] + (["No product matched. Before saying a product does not exist, try semantic_search_products with a description of it."] if not results else []),
+                },
+                indent=2,
+                default=str,
+            )
+        except Exception as e:
+            return json.dumps({"error": f"Find products failed: {e!s}", "results": [], "row_count": 0}, indent=2, default=str)
         finally:
             if conn:
                 await self.release_connection(conn)

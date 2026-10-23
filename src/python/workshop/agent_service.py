@@ -268,14 +268,15 @@ Rules
 - Stock levels in this dataset are a snapshot and are not tied to sales history, so describe excess as "within this dataset".
 - Orders dated after today are not real sales. Windows must end today.
 - Fetch table schemas before writing SQL. Use exact column names and limit results.
-- For product lookups use get_products_by_name (by name) or semantic_search_products (by description). For history and trends: ALWAYS call year_over_year_summary first for any question about a calendar year, a comparison between years, or "what happened in <year>". Never write SQL for those. Use execute_sales_query only for questions no dedicated tool covers. Give the change and where it is concentrated, and do not invent causes the data does not hold. A year_over_year_summary result already holds the totals, every store, every category and every month, so in one answer give both years' totals and the change in units, revenue and orders, then the movers listed under biggest_movers (they cover both amount and percentage). Do not offer breakdowns you already have.
-- Prefer the dedicated tools (rank_capital_tied_up, compare_store_coverage, seasonal_baseline_check, year_over_year_summary, store_seasonal_alignment, stock_cover_ranking, frequently_bought_together) for stock, coverage, seasonal, year, store-pattern and bought-together figures. Use product_sales for every question about which products sold most, least, best, worst or changed, and how a named product is doing: give it the period name (this_month, this_season, last_12_months and so on) and it resolves exact dates and compares equal-length windows. Use store_seasonal_alignment for which stores follow or differ from the company seasonal pattern (leave the category empty unless the user names one), stock_cover_ranking for the gap between stock and sales speed or for products with more than N years of stock, and frequently_bought_together for product pairs by store, season, year or category. To analyse products you found with semantic_search_products or get_products_by_name, pass their SKUs in the skus argument of stock_cover_ranking or frequently_bought_together, so the figures cover exactly those products instead of a top-N list. Use recent_order_lines for what sold last, such as the latest or most recent N products or orders. Write your own SQL only for questions they cannot answer. Never join inventory to order_items in one query and then sum stock: that repeats each stock row once per order line. Aggregate stock and sales separately, then join.
+- Product lookups by SKU (starts with, ends with or contains), by name or by category, and questions such as "stock of SKU ..." or "details of product ...", go to find_products first. It returns every matching product with its stock summed by the database, so never write SQL for them: a hand-written query once returned 3 of 45 matching products with partial sums. Pass the SKU text exactly as the user typed it and never add letters or digits to it ("ending 001" means sku_ends_with="001"). Ask for top_n=50 when the user wants the matches. If products_matching is more than products_returned, say how many match and that these are the first ones. Show every returned product, not just 10. If nothing matches, say so and name what you searched for. Use semantic_search_products to find products by description. If it returns nothing, never say the catalogue has no such product: call find_products with name_contains, description_contains or category_name, and retry the search with similarity_threshold 20.
+- For product lookups by name only, get_products_by_name also works. For history and trends: ALWAYS call year_over_year_summary first for any question about a calendar year, a comparison between years, or "what happened in <year>". Never write SQL for those. Use execute_sales_query only for questions no dedicated tool covers. Give the change and where it is concentrated, and do not invent causes the data does not hold. A year_over_year_summary result already holds the totals, every store, every category and every month, so in one answer give both years' totals and the change in units, revenue and orders, then the movers listed under biggest_movers (they cover both amount and percentage). Do not offer breakdowns you already have.
+- Prefer the dedicated tools (rank_capital_tied_up, compare_store_coverage, seasonal_baseline_check, year_over_year_summary, store_seasonal_alignment, stock_cover_ranking, frequently_bought_together) for stock, coverage, seasonal, year, store-pattern and bought-together figures. Use product_sales for every question about which products sold most, least, best, worst or changed, and how a named product is doing: give it the period name (this_month, this_season, last_12_months and so on) and it resolves exact dates and compares equal-length windows. Use store_seasonal_alignment for which stores follow or differ from the company seasonal pattern (leave the category empty unless the user names one), stock_cover_ranking for the gap between stock and sales speed or for products with more than N years of stock, and frequently_bought_together for product pairs by store, season, year or category. To analyse products you found with semantic_search_products or get_products_by_name, pass their SKUs in the skus argument of stock_cover_ranking or frequently_bought_together, so the figures cover exactly those products instead of a top-N list. "Which category swings most through the year" means the biggest gap between a category's highest and lowest monthly seasonal index: call seasonal_baseline_check for every category and compare those gaps, and never work it out with your own SQL. Use recent_order_lines for what sold last, such as the latest or most recent N products or orders. Write your own SQL only for questions they cannot answer. Never join inventory to order_items in one query and then sum stock: that repeats each stock row once per order line. Aggregate stock and sales separately, then join.
 - Never guess a store id. To pick a store, pass store_name (for example Seattle); the tool resolves it. If a tool says a store is not visible or not found, do not report its zeros as sales: say you could not find or see that store, or run the tool again without a store.
 - Sales wording means one thing every time. "Best", "top", "most" and "sales" rank by units unless the user says revenue, money or dollars; "worst" or "performing worst" means the biggest fall in units against an equal-length earlier period; with no period given use the last 12 months. "Latest" or "most recent" order lines come from recent_order_lines, which fixes the order, and you say how many lines share the latest date (order_lines_on_that_date), because many do. When asked how a product is doing, compare it with the previous equal-length period (compare=previous_period) so the answer shows a trend, not just one number. Always say in one line which metric and which dates you used, and show units and revenue together. Never compare two windows of different lengths without per-day figures. If the user asks why a number changed from an earlier answer, run the tool again with the same arguments and explain the difference in the windows or the metric; do not guess.
-- Never say you cannot answer a Zava question because no tool matches it. Work it out from the data yourself: fetch the table schemas, write read-only SQL with execute_sales_query, check the result, and answer. If the data cannot answer it, say what is missing in one sentence and give the closest figures you do have. Show at most 10 rows of any list and give the count for the rest.
+- Never say you cannot answer a Zava question because no tool matches it. Work it out from the data yourself: fetch the table schemas, write read-only SQL with execute_sales_query, check the result, and answer. If the data cannot answer it, say what is missing in one sentence and give the closest figures you do have. Show at most 10 rows of any list and give the count for the rest, except a product lookup with find_products, where you show every product it returned.
 - If a comparison needs stores this user cannot see, say so in one sentence, then answer with the closest thing you can do for their own scope (for example their own seasonal pattern per category) in the same answer, and do not offer options.
 - Every tool result that has a "scope" field lists the stores it covers. Begin any answer that contains figures with a line "Scope: <the stores listed>". If covers_all_stores is true the figures are network totals and you may say so. If it is false, and the user asks for a network, company or all-store figure, say plainly that you can only see the listed stores and cannot give a network total, then label the figure with those stores. Never call a figure a network total unless covers_all_stores is true.
-- Value at cost is an upper bound on cash released by clearing stock, not the cash itself. Say so.
+- When you give a value at cost as the cash a clearance would release, say it is an upper bound on cash, not the cash itself.
 - Never place orders, clear stock or move stock. Present every recommendation as a draft for a person to approve, with the evidence behind it.
 - Your answer is checked automatically before the user sees it. Every figure must appear in a tool result from this conversation. If you work a figure out yourself, put it on its own line in the form "My calculation: <inputs> = <result>", using only inputs that appear in tool results or in the user's question. Never do arithmetic yourself: for any figure you derive (a ratio, difference, percentage, total or per-unit value) call calculate with figures from tool results and use its results exactly, in a table or in the text. Write a calculated result with at most 2 decimals and no extra digits. Do not round to a different precision than the tool gives, and do not quote figures from memory.
 
@@ -284,8 +285,11 @@ Workflows
 2. Store allocation: use compare_store_coverage. Say that the imbalance is relative, not a shortage, and that transfer costs are not in the data. If only one store is in scope, say there is nothing to compare against.
 3. Seasonal watch: use seasonal_baseline_check and say where any shift is concentrated. Lead times are not in the data. Ask the user for one, or label your assumption clearly.
 
-- Tables: whenever the user asks for a table, or your answer lists three or more items that each have two or more figures (products, stores, months, categories), present them as a markdown table with a header row, one row per item, readable column names with units (for example "Stock units", "Value at cost ($)"), and numbers in their own columns. By default keep a table to the columns that answer the question, but always include every column the user asks for, including new columns they ask you to calculate (for example a ratio, a difference, a percentage or a total); the user's request overrides any default. Write it exactly like this example, with the alignment row only as the second line and never inside a cell:\n\n| Store | Units sold | Revenue ($) |\n|:---|---:|---:|\n| Seattle | 25349 | 1726491.36 |\n\nShow at most 10 rows and give the count for the rest. Do not put a table inside a bullet point, and do not describe a table in words as well.
-- Write for a busy inventory or store manager, not a data analyst. After the Scope line, lead with one or two plain-English sentences: what is happening, why it matters and what to do about it. Then give the evidence under readable labels such as "units sold" or "months of stock" instead of field names such as units_change_pct or covers_all_stores. Keep every figure exact, and keep the caveats and the draft recommendations. Do not name tools in the answer. Never write internal field names or IDs, such as covers_all_stores, clearance_guard, peak_is_near or product_id: say "all 8 stores" or "the seasonal peak is near" instead, and give products by name only.
+- Tables: whenever the user asks for a table, or your answer lists three or more items that each have two or more figures (products, stores, months, categories), present them as a markdown table with a header row, one row per item, readable column names with units (for example "Stock units", "Value at cost ($)"), and numbers in their own columns. By default keep a table to the columns that answer the question, but always include every column the user asks for, including new columns they ask you to calculate (for example a ratio, a difference, a percentage or a total); the user's request overrides any default. Write it exactly like this example, with the alignment row only as the second line and never inside a cell:\n\n| Store | Units sold | Revenue ($) |\n|:---|---:|---:|\n| Seattle | 25349 | 1726491.36 |\n\nShow at most 10 rows and give the count for the rest (every returned row for a find_products lookup). Do not put a table inside a bullet point, and do not describe a table in words as well.
+- Answer only what was asked. For a lookup (a product, a SKU, a stock level, a price, a list of products) give the product names, SKUs and the figures asked for, in a table when there are three or more, and stop. Do not add totals, value at cost, calculations, "My calculation" lines, caveats, workings or recommendations that were not requested. Say each figure once: in a sentence, or in a list or table, not both. A comparison always writes out both totals and then the change, for example "X in 2024 against Y in 2023, up Z", never only the change, and anything the rules above require (the metric and the exact start and end dates used, written like 2025-10-24 to 2026-10-23; how many order lines share the latest date) still goes in. For a lookup the first sentence is the answer itself, for example "1,782 units of Phillips Screwdriver Set in Seattle (SKU HTSD010001).", with no explanation of why it matters and no suggestion of what to do with it. The user can ask for more. When more detail exists, end with one plain line that states what else is available, for example "More on request: stock by store, cost and description.", written as a statement and not as a question or an offer.
+- The reader is a manager using a chat app. Never show workings in the answer: no formulas, no field names with underscores, no tool, SQL or database wording, no timestamps (write dates as 2026-10-23), and never refer to a calculation ("as calculated above"). Lines that start with "My calculation" are for the automatic check and are removed before the reader sees the answer.
+- Bold with **double asterisks** the few terms the reader must not miss: the main figures and the product or store names in your first sentence, and any warning. Never bold a whole sentence, a table header or every figure.
+- Write for a busy inventory or store manager, not a data analyst. After the Scope line, lead with one or two plain-English sentences: what is happening, why it matters and what to do about it. Then give the evidence under readable labels such as "units sold" or "months of stock" instead of field names such as units_change_pct or covers_all_stores. Keep every figure exact, keep caveats that change how a figure should be read, and give a draft recommendation only when the user asked what to do or the question is about a decision. Do not name tools in the answer. Never write internal field names or IDs, such as covers_all_stores, clearance_guard, peak_is_near or product_id: say "all 8 stores" or "the seasonal peak is near" instead, and give products by name only (add the SKU only when the user asks about SKUs or you are listing products found by SKU).
 - Downloads: when the user asks for a file, download, export, CSV, Excel or PDF of results, first get the figures with your data tools, then call make_export with every row you have (up to 1000) and put the markdown link line it returns in your answer, after a one-line summary. You cannot email or attach files, so never promise to; the link is the download. Say in one line what the file contains.
 - Charts: when the user asks for a chart, graph or histogram, first get the figures with your data tools, then call make_chart using only those returned figures, and put the markdown image line it returns in your answer. Use a bar chart to compare stores, categories or products, a line chart for change over time, and a histogram for how values are spread. For a histogram of daily or per-order figures, query the individual figures first. If the chart fails, say so in one sentence and answer in words.
 
@@ -554,6 +558,59 @@ def empty_scope_problem(turn_results: list[str], answer: str) -> list[str]:
     ]
 
 
+SHOW_ALL_LIMIT = 10
+
+
+def lookup_problem(turn_results: list[str], answer: str, message: str = "") -> list[str]:
+    """A product lookup the tool answered in full must be shown in full: the model otherwise keeps the first 10 or 20 rows of 45.
+
+    A question that only wants a count or a total ("how many", "total") is answered without the list.
+    """
+    if re.search(r"(?i)\b(how many|total|count|sum)\b", message) and not re.search(r"(?i)\b(sku|skus|list|show|which|each|every)\b", message):
+        return []
+    skus: list[str] = []
+    for raw in turn_results:
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(data, dict) and isinstance(data.get("summary"), dict) and "products_returned" in data["summary"]:
+            skus = [r["sku"] for r in data.get("results", []) if isinstance(r, dict) and r.get("sku")]
+    if len(skus) <= SHOW_ALL_LIMIT or "](/exports/" in answer or "](/charts/" in answer:
+        return []
+    missing = [s for s in skus if s not in answer]
+    if not missing:
+        return []
+    return [f"The product lookup returned {len(skus)} products and the answer lists only {len(skus) - len(missing)}. Show every returned product in the table, with the same columns, and do not say these are the first few."]
+
+
+_COMPARISON_WORDS = re.compile(r"(?i)\bcompar|\bvs\.?\b|\bversus\b|\bagainst\b|\bthan\b|\bdiffer|what happened|how did")
+
+
+def required_facts_problem(message: str, turn_results: list[str], answer: str) -> list[str]:
+    """Facts the tool results make mandatory: both totals of a year comparison, and the exact dates a sales window covered."""
+    text = answer.replace("**", "")
+    flat = text.replace(",", "")
+    problems: list[str] = []
+    for raw in turn_results:
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        totals = data.get("totals")
+        if isinstance(totals, dict) and "units_compare" in totals and _COMPARISON_WORDS.search(message):
+            missing = [f"{totals[k]:,}" for k in ("units", "units_compare") if isinstance(totals.get(k), (int, float)) and str(int(totals[k])) not in flat]
+            if missing:
+                problems.append(f"A comparison must write out both totals. The total units {' and '.join(missing)} are missing from the answer; state the units for each year, then the change.")
+        window = data.get("window")
+        if isinstance(window, dict) and window.get("start") and window.get("end") and isinstance(data.get("results"), list):
+            if str(window["start"]) not in text or str(window["end"]) not in text:
+                problems.append(f"State the exact dates the figures cover, written as {window['start']} to {window['end']}.")
+    return list(dict.fromkeys(problems))
+
+
 def scope_problem(message: str, identity: str | None, answer: str) -> list[str]:
     """A store user who asks about another store must be told it is not visible, not given their own figure."""
     if identity in (None, GLOBAL_RLS_ID):
@@ -580,8 +637,11 @@ _SEPARATOR = re.compile(r"^\s*\|?(\s*:?-{3,}:?\s*\|)+\s*$")
 
 
 def repair_tables(answer: str) -> str:
-    """Fix markup slips in tables: alignment markers copied into cells and a missing header separator row."""
+    """Fix markup slips in tables: alignment markers copied into cells, a missing header separator row and a row missing its closing pipe."""
     lines, out, i = answer.split("\n"), [], 0
+    for k in range(1, len(lines)):
+        if lines[k].lstrip().startswith("|") and not lines[k].rstrip().endswith("|") and _TABLE_LINE.match(lines[k - 1]):
+            lines[k] = lines[k].rstrip() + " |"
     while i < len(lines):
         if not _TABLE_LINE.match(lines[i]):
             out.append(lines[i])
@@ -609,11 +669,74 @@ def without_closing_offer(answer: str, used_tools: bool) -> str:
 
 
 def without_scope_line(answer: str, used_tools: bool) -> str:
-    """A Scope line says which stores a data answer covers; with no tool call and no figures there is nothing to scope (run 33: "who built you?")."""
+    """A Scope line says which stores a data answer covers; with no tool call and no real figures (small counts such as "8 stores" do not count) there is nothing to scope (run 33: "who built you?")."""
     if used_tools:
         return answer
+    empty = re.sub(r"(?im)^\W*scope:?\W*(none|n/a|not applicable|no data)\b[^\n]*\n+", "", answer, count=1).strip()
+    if empty != answer.strip() and empty:
+        return empty  # "Scope: none" says nothing, whatever else the answer holds
     kept = re.sub(r"(?im)^\W*scope:.*\n+", "", answer, count=1).strip()
-    return kept if kept and not re.search(r"\d", kept) and not re.fullmatch(r"\W*scope:.*", kept, re.IGNORECASE) else answer
+    return kept if kept and not re.search(r"\d{3,}|\d[\d,]*\.\d|\d%|\$\d", kept) and not re.fullmatch(r"\W*scope:.*", kept, re.IGNORECASE) else answer
+
+
+_WORKINGS = re.compile(r"(?im)^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?my calculation[^\n]*(?:\n|$)")
+_EMPTY_HEADER = re.compile(r"(?im)^[ \t]*(?:[-*][ \t]+)?\**(?:notes?|calculations?|workings?)\**[ \t]*:?[ \t]*\**[ \t]*(?=\n[ \t]*\n|\n?\Z)")
+_ISO_TIME = re.compile(r"\b(\d{4}-\d\d-\d\d)T\d\d:\d\d(?::\d\d(?:\.\d+)?)?(?:Z|[+-]\d\d:?\d\d)?(?:[ \t]*\(?UTC\)?)?")
+_FIELD_NAME = re.compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b")
+_PROTECTED = re.compile(r"(\]\([^)]*\)|`[^`]*`)")
+_LONG_DECIMAL = re.compile(r"(?<![\w.])(-?\d+\.\d{5,})(?![\w])")
+
+
+def _short_decimal(match: re.Match) -> str:
+    value = float(match.group(1))
+    return f"{value:.2f}" if abs(value) >= 1 else f"{value:.4f}"
+_BOLD_NUMBER = re.compile(r"(?<![\w*.$/:-])(\$?\d+(?:,\d{3})*(?:\.\d+)?%?)(?![\w*:-]|\.\d|,\d)")
+
+
+_BARE_DOWNLOAD = re.compile(r"(?<![\](\w/])(/exports/e[0-9a-f]{20}\.(?:csv|pdf))")
+
+
+def tidy_answer(answer: str) -> str:
+    """What the reader sees: no workings, raw timestamps or field names. The verified draft is logged; this only changes the display."""
+    text = _WORKINGS.sub("", answer)
+    text = _BARE_DOWNLOAD.sub(r"[Download](\1)", text)  # the model sometimes writes the link as plain text
+    text = _EMPTY_HEADER.sub("", text)
+    text = _ISO_TIME.sub(r"\1", text)
+    parts = _PROTECTED.split(text)
+    text = "".join(p if i % 2 else _LONG_DECIMAL.sub(_short_decimal, _FIELD_NAME.sub(lambda m: m.group(0).replace("_", " "), p)) for i, p in enumerate(parts))
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def bold_key_figures(answer: str) -> str:
+    """If the model bolded nothing, bold the figures in the opening paragraph so the answer can be scanned. Years and dates stay plain."""
+    if "**" in answer:
+        return answer
+    lines = answer.split("\n")
+    start = next((i for i, ln in enumerate(lines) if ln.strip() and not re.match(r"\W*scope:", ln, re.IGNORECASE)), None)
+    if start is None or lines[start].lstrip().startswith(("|", "-", "*", ">", "#", "!")) or re.match(r"\s*\d+[.)]\s", lines[start]):
+        return answer
+
+    def bold(match: re.Match) -> str:
+        figure = match.group(1)
+        if re.fullmatch(r"(19|20)\d\d", figure):
+            return figure
+        return f"**{figure}**"
+
+    count = 0
+    end = start
+    while end < len(lines) and lines[end].strip():
+        end += 1
+    paragraph = _PROTECTED.split(" ".join(lines[start:end]))
+    out = []
+    for i, part in enumerate(paragraph):
+        if i % 2 or count >= 4:
+            out.append(part)
+            continue
+        new, n = _BOLD_NUMBER.subn(bold, part, count=4 - count)
+        count += n
+        out.append(new)
+    lines[start:end] = ["".join(out)]
+    return "\n".join(lines)
 
 
 def _strip_offer(answer: str) -> str:
@@ -826,13 +949,15 @@ async def run_turn(
 
         if not calls:
             answer = repair_tables(without_closing_offer(without_scope_line(reply.content or "", tool_count > 0), tool_count > 0))
-            problems = verify_answer(answer, [*evidence, message]).problems + scope_problem(message, identity, answer) + empty_scope_problem(turn_results, answer)
+            problems = verify_answer(answer, [*evidence, message]).problems + scope_problem(message, identity, answer) + empty_scope_problem(turn_results, answer) + lookup_problem(turn_results, answer, message) + required_facts_problem(message, turn_results, answer)
             if problems and revisions < MAX_REVISIONS:
                 revisions += 1
                 logger.warning("Answer failed verification (revision %d): %s", revisions, problems)
                 working.append({"role": "assistant", "content": answer})
                 working.append({"role": "user", "content": revision_request(problems)})
                 continue
+            verified = answer
+            answer = bold_key_figures(tidy_answer(answer))
             if problems:
                 logger.warning("Answer delivered with unresolved verification problems: %s", problems)
                 answer += "\n\nVerification note: this answer could not be fully checked against the data. " + " ".join(problems)
@@ -844,6 +969,7 @@ async def run_turn(
                 **log,
                 question=message,
                 answer=answer,
+                answer_verified=verified,
                 revisions=revisions,
                 tool_calls=tool_count,
                 ms=round((time.perf_counter() - turn_started) * 1000),

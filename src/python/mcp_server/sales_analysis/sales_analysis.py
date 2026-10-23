@@ -607,6 +607,36 @@ async def recent_order_lines(
     )
 
 
+@mcp.tool()
+async def find_products(
+    ctx: Context,
+    sku_ends_with: Annotated[Optional[str], Field(description="Match SKUs that end with this text, for example '001'. Pass exactly what the user typed; never add letters or digits.")] = None,
+    sku_starts_with: Annotated[Optional[str], Field(description="Match SKUs that start with this text, for example 'HT'.")] = None,
+    sku_contains: Annotated[Optional[str], Field(description="Match SKUs that contain this text.")] = None,
+    name_contains: Annotated[Optional[str], Field(description="Match product names containing all of these words; a plural 's' is ignored (\"windows casing set\" finds \"Window Casing Set\").")] = None,
+    description_contains: Annotated[Optional[str], Field(description="Match product descriptions containing all of these words, for example 'paint'. Use it for what kind of product the user wants when the name does not say.")] = None,
+    category_name: Annotated[Optional[str], Field(description="Optional category name.")] = None,
+    store_name: Annotated[Optional[str], Field(description="Optional store name such as 'Seattle'. Never guess a store_id.")] = None,
+    store_id: Annotated[Optional[int], Field(description="Optional store ID. Do not guess it; use store_name.")] = None,
+    by_store: Annotated[bool, Field(description="True only when the user asks for stock per store or where it is held.")] = False,
+    include_details: Annotated[bool, Field(description="True only when the user asks for product details: adds cost and description.")] = False,
+    top_n: Annotated[int, Field(description="Products to return. At most 100.", ge=1, le=100)] = 50,
+) -> str:
+    """Find products by SKU pattern (starts, ends or contains), name or category, with the stock held for each.
+
+    Use this for "stock of SKU ...", "products whose SKU ends with ...", "details of product ..." and "how much X do we have".
+    The database sums the stock for every matching product, and the result says how many products match, so a long list is never
+    silently cut short. The result includes a scope field naming the stores covered. It honors the current RLS user context.
+    """
+    rls_user_id = get_rls_user_id(ctx)
+    provider = get_db_provider()
+    return await provider.find_products(
+        rls_user_id=rls_user_id, sku_starts_with=sku_starts_with, sku_ends_with=sku_ends_with, sku_contains=sku_contains,
+        name_contains=name_contains, description_contains=description_contains, category_name=category_name, store_id=store_id, store_name=store_name,
+        by_store=by_store, include_details=include_details, top_n=top_n,
+    )
+
+
 async def run_http_server() -> None:
     """Run the MCP server in HTTP mode."""
     print(f"📡 MCP endpoint available at: http://{mcp.settings.host}:{mcp.settings.port}/mcp")
