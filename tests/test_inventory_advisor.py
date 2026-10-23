@@ -285,6 +285,29 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("No store named", other["message"])
         self.assertNotIn("Kirkland", other["message"].split("Visible stores:")[-1])
 
+    async def test_recent_order_lines_match_independent_sql_with_a_fixed_tie_break(self):
+        out = await self.call("recent_order_lines", GLOBAL, store_name="Seattle", top_n=10)
+        rows = await sql_rows(
+            GLOBAL,
+            "SELECT oi.order_item_id, p.sku, o.order_date FROM retail.order_items oi JOIN retail.orders o USING (order_id) "
+            "JOIN retail.products p ON p.product_id = oi.product_id WHERE oi.store_id = 1 AND o.order_date <= CURRENT_DATE "
+            "ORDER BY o.order_date DESC, o.order_id DESC, oi.order_item_id DESC LIMIT 10",
+        )
+        self.assertEqual([r["order_line_id"] for r in out["results"]], [r["order_item_id"] for r in rows])
+        self.assertEqual([r["sku"] for r in out["results"]], [r["sku"] for r in rows])
+        latest = rows[0]["order_date"]
+        count = (await sql_rows(GLOBAL, "SELECT COUNT(*) n FROM retail.order_items oi JOIN retail.orders o USING (order_id) WHERE oi.store_id = 1 AND o.order_date = $1", latest))[0]["n"]
+        self.assertEqual(out["summary"]["latest_order_date"], str(latest))
+        self.assertEqual(out["summary"]["order_lines_on_that_date"], count)
+        self.assertEqual(out, await self.call("recent_order_lines", GLOBAL, store_id=1, top_n=10))
+        category = await self.call("recent_order_lines", GLOBAL, category_name="HARDWARE", top_n=3)
+        self.assertEqual({r["category"] for r in category["results"]}, {"HARDWARE"})
+        self.assertIn("Unknown category", (await self.call("recent_order_lines", GLOBAL, category_name="NOPE"))["message"])
+        self.assertEqual((await self.call("recent_order_lines", KIRKLAND, top_n=3))["scope"]["stores_included"], ["Zava Retail Kirkland"])
+        wrong = await self.call("recent_order_lines", SEATTLE, store_id=6)
+        self.assertEqual(wrong["results"], [])
+        self.assertIn("not visible", wrong["message"])
+
     async def test_every_store_tool_takes_a_store_name_and_agrees_with_the_store_id(self):
         seattle = (await sql_rows(GLOBAL, "SELECT store_id FROM retail.stores WHERE store_name = 'Zava Retail Seattle'"))[0]["store_id"]
         for tool, args in (

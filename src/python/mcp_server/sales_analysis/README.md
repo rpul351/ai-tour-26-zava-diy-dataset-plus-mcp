@@ -107,6 +107,10 @@ Ranks products (`by="product"`) or store and product pairs (`by="store_product"`
 
 Ranks pairs of products in the same order, with orders together, how many times more often than chance, and order counts by season. Optional `store_id`, `category_name`, `season`, `year`, `min_orders`, `top_n`. Pairs under 20 orders are flagged as too thin to trust.
 
+### `recent_order_lines`
+
+Lists the newest order lines, newest first, one row per order line. The order is fixed (order date, then order id, then line id), so the same question gives the same lines. The summary gives `latest_order_date` and `order_lines_on_that_date`, because many lines share the newest date. Optional `store_name`, `category_name`, `skus`, `top_n` (at most 50). Orders dated after today are excluded.
+
 ### `year_over_year_summary`
 
 Compare one calendar year with another.

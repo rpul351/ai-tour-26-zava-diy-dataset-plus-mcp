@@ -582,6 +582,31 @@ async def product_sales(
     )
 
 
+@mcp.tool()
+async def recent_order_lines(
+    ctx: Context,
+    store_name: Annotated[
+        Optional[str],
+        Field(description="Optional store name such as 'Seattle'. Always use this to pick a store; never guess a store_id."),
+    ] = None,
+    store_id: Annotated[Optional[int], Field(description="Optional store ID. Do not guess it; use store_name.")] = None,
+    category_name: Annotated[Optional[str], Field(description="Optional category name.")] = None,
+    skus: Annotated[Optional[List[str]], Field(description="Optional product SKUs.", max_length=50)] = None,
+    top_n: Annotated[int, Field(description="Number of order lines to return. At most 50.", ge=1, le=50)] = 10,
+) -> str:
+    """List the most recent order lines (what sold last), newest first, one row per order line.
+
+    Use this for "latest", "most recent" or "last N products sold". The order is fixed (date, then order id, then line id) so the same
+    question gives the same lines, and the result says how many lines share the latest date. To rank products by how much they sold
+    in a period, use product_sales instead. The result includes a scope field naming the stores covered. It honors the current RLS user context.
+    """
+    rls_user_id = get_rls_user_id(ctx)
+    provider = get_db_provider()
+    return await provider.recent_order_lines(
+        rls_user_id=rls_user_id, store_id=store_id, store_name=store_name, category_name=category_name, skus=skus, top_n=top_n
+    )
+
+
 async def run_http_server() -> None:
     """Run the MCP server in HTTP mode."""
     print(f"📡 MCP endpoint available at: http://{mcp.settings.host}:{mcp.settings.port}/mcp")

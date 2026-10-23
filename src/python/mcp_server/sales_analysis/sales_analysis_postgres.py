@@ -2217,6 +2217,95 @@ class PostgreSQLSchemaProvider:
             if conn:
                 await self.release_connection(conn)
 
+    async def recent_order_lines(
+        self,
+        rls_user_id: str,
+        store_id: Optional[int] = None,
+        store_name: Optional[str] = None,
+        category_name: Optional[str] = None,
+        skus: Optional[List[str]] = None,
+        top_n: int = 10,
+    ) -> str:
+        """List the most recent order lines, newest first, with a fixed tie-break so the same question gives the same lines."""
+        conn = None
+        try:
+            conn = await self.get_connection()
+            await conn.execute("SELECT set_config('app.current_rls_user_id', $1, false)", rls_user_id)
+            store_id, refusal = await self._resolve_store(conn, store_id, store_name)
+            if refusal:
+                return refusal
+            scope = await self._describe_scope(conn, store_id)
+            if category_name and not await conn.fetchval(
+                "SELECT 1 FROM retail.categories WHERE UPPER(category_name) = UPPER($1::text)", category_name
+            ):
+                valid = [r["category_name"] for r in await conn.fetch("SELECT category_name FROM retail.categories ORDER BY 1")]
+                return json.dumps({"results": [], "scope": scope, "message": "Unknown category.", "valid_categories": valid}, indent=2, default=str)
+            wanted = [x.strip().upper() for x in skus] if skus else None
+
+            args: List[Any] = []
+
+            def bind(value: Any) -> str:
+                args.append(value)
+                return f"${len(args)}"
+
+            conditions = ["o.order_date <= CURRENT_DATE"]
+            if store_id is not None:
+                conditions.append(f"oi.store_id = {bind(store_id)}::int")
+            if category_name:
+                conditions.append(f"UPPER(c.category_name) = UPPER({bind(category_name)}::text)")
+            if wanted:
+                conditions.append(f"UPPER(p.sku) = ANY({bind(wanted)}::text[])")
+            matching = """WITH f AS (
+                SELECT o.order_date, o.order_id, oi.order_item_id, s.store_name, p.product_name, p.sku, c.category_name,
+                       oi.quantity, oi.unit_price, oi.total_amount
+                FROM retail.order_items oi
+                JOIN retail.orders o ON o.order_id = oi.order_id
+                JOIN retail.products p ON p.product_id = oi.product_id
+                JOIN retail.categories c ON c.category_id = p.category_id
+                JOIN retail.stores s ON s.store_id = oi.store_id
+                WHERE """ + " AND ".join(conditions) + ")"
+
+            latest = await conn.fetchrow(
+                matching
+                + " SELECT MAX(order_date) AS latest_date, COUNT(*) FILTER (WHERE order_date = (SELECT MAX(order_date) FROM f)) AS lines_on_that_date FROM f",
+                *args,
+            )
+            rows = await conn.fetch(
+                matching + f" SELECT * FROM f ORDER BY order_date DESC, order_id DESC, order_item_id DESC LIMIT {bind(top_n)}::int",
+                *args,
+            )
+            latest_date = latest["latest_date"]
+            on_latest = latest["lines_on_that_date"]
+            results = [
+                {
+                    "order_date": r["order_date"], "order_id": r["order_id"], "order_line_id": r["order_item_id"], "store": r["store_name"],
+                    "product_name": r["product_name"], "sku": r["sku"], "category": r["category_name"], "quantity": r["quantity"],
+                    "unit_price": float(r["unit_price"]), "total_amount": float(r["total_amount"]),
+                }
+                for r in rows
+            ]
+            return json.dumps(
+                {
+                    "scope": scope,
+                    "parameters": {"store_id": store_id, "category_name": category_name, "skus": wanted, "top_n": top_n},
+                    "summary": {"latest_order_date": latest_date, "order_lines_on_that_date": int(on_latest or 0)},
+                    "row_count": len(results),
+                    "results": results,
+                    "notes": [
+                        "Newest first: by order date, then order id, then order line id, so the same question gives the same lines.",
+                        "Many lines share the latest date (see order_lines_on_that_date), so which lines count as the latest is decided by that fixed tie-break.",
+                        "Orders dated after today are excluded. One row is one order line, so an order with several products appears more than once.",
+                    ],
+                },
+                indent=2,
+                default=str,
+            )
+        except Exception as e:
+            return json.dumps({"error": f"Recent order lines failed: {e!s}", "results": [], "row_count": 0}, indent=2, default=str)
+        finally:
+            if conn:
+                await self.release_connection(conn)
+
     @staticmethod
     def _movers(rows: List[Dict[str, Any]], label_key: str) -> Dict[str, Any]:
         """Largest unit decline and gain, by amount and by percentage, so small and large movers both show."""

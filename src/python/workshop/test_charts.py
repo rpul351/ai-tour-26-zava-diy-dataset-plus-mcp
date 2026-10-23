@@ -257,6 +257,16 @@ def test_thanks_goodbye_and_about_questions_are_answered_and_real_questions_are_
     assert agent_service.canned_reply("", g, None) is None
 
 
+def test_a_scope_line_is_dropped_only_when_no_data_tool_was_used():
+    text = "Scope: all 8 stores\n\nI do not know who built me."
+    assert agent_service.without_scope_line(text, False) == "I do not know who built me."
+    assert agent_service.without_scope_line(text, True) == text
+    assert agent_service.without_scope_line("Scope: Kirkland", False) == "Scope: Kirkland"  # never leave an empty answer
+    assert agent_service.without_scope_line("No scope here.", False) == "No scope here."
+    figures = "Scope: Kirkland\n\nUnits were 90,308."
+    assert agent_service.without_scope_line(figures, False) == figures  # a follow-up that quotes figures keeps its Scope line
+
+
 def test_questions_about_the_assistant_are_detected_and_data_questions_never_are():
     about = ["do you consider yourself chatbot or agent?", "Are you ChatGPT?", "which AI model are you?", "how do you work?", "what are your limitations?",
              "is this a RAG system?", "how do I export our chat", "who built you?", "can you browse the internet?", "are you making up these numbers?",

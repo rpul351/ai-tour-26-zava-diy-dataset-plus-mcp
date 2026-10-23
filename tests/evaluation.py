@@ -169,6 +169,18 @@ async def team_ground_truth() -> dict:
         "JOIN retail.orders o USING (order_id) JOIN retail.products p ON p.product_id = oi.product_id WHERE p.sku = 'LBMLD005' AND oi.store_id = $5",
         month_start, today, prev_start, prev_end, seattle_id,
     ))[0]
+    recent = await sql_rows(
+        GLOBAL,
+        "SELECT p.product_name, p.sku, o.order_date FROM retail.order_items oi JOIN retail.orders o USING (order_id) "
+        "JOIN retail.products p ON p.product_id = oi.product_id WHERE oi.store_id = $1 AND o.order_date <= CURRENT_DATE "
+        "ORDER BY o.order_date DESC, o.order_id DESC, oi.order_item_id DESC LIMIT 5",
+        seattle_id,
+    )
+    recent_count = (await sql_rows(
+        GLOBAL,
+        "SELECT COUNT(*) n FROM retail.order_items oi JOIN retail.orders o USING (order_id) WHERE oi.store_id = $1 AND o.order_date = $2",
+        seattle_id, recent[0]["order_date"],
+    ))[0]["n"]
     top_by_units = (await sql_rows(
         GLOBAL,
         "SELECT p.product_name FROM retail.order_items oi JOIN retail.orders o USING (order_id) JOIN retail.products p ON p.product_id = oi.product_id "
@@ -176,6 +188,9 @@ async def team_ground_truth() -> dict:
     ))[0]["product_name"]
     return {
         "month_days": days,
+        "recent_seattle": [(r["product_name"], r["sku"]) for r in recent],
+        "recent_date": recent[0]["order_date"],
+        "recent_count": int(recent_count),
         "window_casing": (int(wcs["cur"]), int(wcs["prev"])),
         "seattle_month_worst": (falls[0]["product_name"], falls[0]["sku"], int(falls[0]["cur"]), int(falls[0]["prev"])),
         "top_by_units": top_by_units,
@@ -332,6 +347,14 @@ def build_cases(t: dict) -> list[Case]:
         Case("K3", "Consistency", "seattle", "how \"windows casing set\" is doing in Seattle store in this month",
              f"Real figures for Window Casing Set ({t['window_casing'][0]} this month against {t['window_casing'][1]} in the same days last month), never 'no data visible'.",
              lambda a: scope(a) + collect(("Window Casing Set" in a, "product not named"), ("no data visible" not in a.lower() and "no stores listed" not in a.lower(), "claimed no data is visible"), (bool(re.search(rf"\b{t['window_casing'][1]}\b", a)), "previous-window figure missing"))),
+        # Latest sales (tester asked for the latest N products sold; many lines share the newest date). Rules fixed before the first run.
+        Case("R1", "Consistency", "seattle", "What are the latest 5 products sold in Seattle?",
+             f"The five newest order lines in the fixed order ({', '.join(n for n, _ in t['recent_seattle'])}), the latest date {t['recent_date']} and that {t['recent_count']} lines share it.",
+             lambda a: scope(a) + no_offer(a) + collect(
+                 (all(n in a for n, _ in t["recent_seattle"]), "a latest product is missing"),
+                 (a.find(t["recent_seattle"][0][0]) <= a.find(t["recent_seattle"][-1][0]) or t["recent_seattle"][0][0] == t["recent_seattle"][-1][0], "newest line is not first"),
+                 (str(t["recent_date"]) in a, "latest date not stated"),
+                 (has(a, t["recent_count"]), "count of lines on the latest date not stated"))),
         # Greetings (tester feedback: saying hi got no hello). Rules fixed before the first run.
         Case("G1", "Greeting", "global", "hi",
              "A friendly hello that names the agent and says the user is a super manager who sees all 8 stores, with no example questions, and never calls it outside scope.",
