@@ -8,6 +8,7 @@ To run: python web_app.py
 Web interface available at: http://127.0.0.1:8005
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -20,9 +21,11 @@ sys.path.append(str(Path(__file__).parent.parent / "workshop"))
 
 import httpx
 from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+import chat_store
+import roles
 from charts import CHART_DIR, valid_chart_name
 from exports import EXPORT_DIR, media_type, valid_export_name
 
@@ -68,6 +71,10 @@ class WebApp:
         self.app.get("/charts/{name}")(self.serve_chart)
         self.app.get("/exports/{name}")(self.serve_export)
         self.app.get("/health")(self.health_check)
+        self.app.get("/api/me")(self.me)
+        self.app.get("/api/chats")(self.list_chats)
+        self.app.get("/api/chats/{chat_id}")(self.read_chat)
+        self.app.delete("/api/chats/{chat_id}")(self.remove_chat)
     
     async def get_chat_page(self) -> HTMLResponse:
         """Serve the chat HTML page."""
@@ -117,6 +124,32 @@ class WebApp:
         except Exception as e:
             return {"error": f"Error processing file: {e!s}"}
     
+    @staticmethod
+    def _private(payload, status_code: int = 200) -> JSONResponse:
+        """Saved chats are personal, so nothing here may be cached by the browser or a proxy."""
+        return JSONResponse(payload, status_code=status_code, headers={"Cache-Control": "no-store"})
+
+    async def me(self, request: Request) -> JSONResponse:
+        """Who is signed in, with their role and the stores they can see."""
+        person = roles.describe(getattr(request.state, "zava_user", None))
+        if person is None:
+            return self._private({"error": "Not signed in."}, 401)
+        return self._private(person)
+
+    async def list_chats(self, request: Request, q: str = "") -> JSONResponse:
+        user = getattr(request.state, "zava_user", None)
+        return self._private({"chats": await asyncio.to_thread(chat_store.list_chats, user, q)})
+
+    async def read_chat(self, request: Request, chat_id: str) -> JSONResponse:
+        user = getattr(request.state, "zava_user", None)
+        chat = await asyncio.to_thread(chat_store.get_chat, user, chat_id) if chat_store.valid_id(chat_id) else None
+        return self._private(chat, 200) if chat else self._private({"error": "Chat not found."}, 404)
+
+    async def remove_chat(self, request: Request, chat_id: str) -> JSONResponse:
+        user = getattr(request.state, "zava_user", None)
+        removed = await asyncio.to_thread(chat_store.delete_chat, user, chat_id) if chat_store.valid_id(chat_id) else False
+        return self._private({"ok": True}) if removed else self._private({"error": "Chat not found."}, 404)
+
     async def stream_chat(self, request: Request, message: str = "", session_id: str = "") -> StreamingResponse:
         """Stream chat responses by proxying to the agent service."""
         if not message.strip():
@@ -133,6 +166,11 @@ class WebApp:
 
         # Add user message to session
         self.chat_sessions[session_id].append({"role": "user", "content": message})
+        user = getattr(request.state, "zava_user", None)
+        if user and session_id != "default" and not await asyncio.to_thread(chat_store.ensure_chat, user, session_id):
+            return StreamingResponse(
+                iter([f"data: {json.dumps({'error': 'That chat is not available.'})}\n\n"]), media_type="text/event-stream"
+            )
 
         return StreamingResponse(
             self._generate_stream(message, session_id, getattr(request.state, "zava_user", None)),
@@ -148,12 +186,17 @@ class WebApp:
     
     async def _generate_stream(self, message: str, session_id: str, user: str | None = None) -> AsyncGenerator[str, None]:
         """Generate streaming response by proxying to agent service."""
+        saving = bool(user) and session_id != "default"
         try:
+            earlier = await asyncio.to_thread(chat_store.recent_messages, user, session_id) if saving else []
+            if saving:
+                await asyncio.to_thread(chat_store.add_message, user, session_id, "user", message)
             async with httpx.AsyncClient(timeout=120.0) as client:
-                # Make request to agent service
+                # Make request to agent service. The saved messages let the agent pick the conversation up again after a restart.
                 request_data = {
                     "message": message,
-                    "session_id": session_id
+                    "session_id": session_id,
+                    "history": earlier,
                 }
                 
                 async with client.stream(
@@ -202,6 +245,8 @@ class WebApp:
                             "role": "assistant", 
                             "content": assistant_message
                         })
+                    if assistant_message and saving:
+                        await asyncio.to_thread(chat_store.add_message, user, session_id, "assistant", assistant_message)
 
             # Send completion signal
             yield "data: [DONE]\n\n"

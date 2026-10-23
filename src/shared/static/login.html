@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="color-scheme" content="light dark">
+    <meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+    <title>Zava Inventory Advisor</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body class="login" data-role="{{ROLE}}">
+    <main class="login-card">
+        <span class="brand-mark large" aria-hidden="true">Z</span>
+        <h1>Zava Inventory Advisor</h1>
+        <p class="login-sub">Sign in to see your stock, sales and products.</p>
+
+        <div class="roles" id="roles" role="group" aria-label="Choose your role">
+            <button type="button" class="role" data-role="store_manager">
+                <strong>Store Manager</strong>
+                <span>Your own store's stock, sales and products</span>
+            </button>
+            <button type="button" class="role" data-role="super_manager">
+                <strong>Super Manager</strong>
+                <span>All eight stores, with network-wide views</span>
+            </button>
+        </div>
+
+        <form id="codeForm" method="post" action="/temp-login" hidden>
+            <input type="hidden" name="role" id="roleField" value="{{ROLE}}">
+            <p class="chosen">Signing in as <strong id="roleName"></strong> <button type="button" class="linklike" id="back">Change</button></p>
+            <label for="code">Access code</label>
+            <input id="code" name="code" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" required>
+            <p class="login-error" role="alert">{{ERROR}}</p>
+            <button type="submit" class="primary">Continue</button>
+        </form>
+        <p class="login-error" role="alert" id="roleError">{{ROLE_ERROR}}</p>
+    </main>
+
+    <script>
+        (function () {
+            var names = { store_manager: 'Store Manager', super_manager: 'Super Manager' };
+            var roles = document.getElementById('roles'), form = document.getElementById('codeForm');
+            function choose(role) {
+                if (!names[role]) return;
+                document.getElementById('roleField').value = role;
+                document.getElementById('roleName').textContent = names[role];
+                roles.hidden = true; form.hidden = false;
+                document.getElementById('roleError').textContent = '';
+                document.getElementById('code').focus();
+            }
+            Array.prototype.forEach.call(document.querySelectorAll('.role'), function (b) {
+                b.addEventListener('click', function () { choose(b.getAttribute('data-role')); });
+            });
+            document.getElementById('back').addEventListener('click', function () { form.hidden = true; roles.hidden = false; });
+            var preset = document.body.getAttribute('data-role');
+            if (preset) choose(preset);
+        })();
+    </script>
+</body>
+</html>

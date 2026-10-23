@@ -12,6 +12,12 @@ from fastapi.testclient import TestClient
 
 import temp_access
 
+import roles  # noqa: E402
+
+_access = Path(tempfile.mkdtemp()) / "access_list.json"
+_access.write_text(json.dumps({"users": {"alice": {"role": "super_manager"}, "kim": {"role": "store_manager", "store": "Zava Retail Kirkland"}}}), encoding="utf-8")
+roles.ACCESS_LIST_FILE = _access
+
 temp_access.CODES_FILE = Path(tempfile.mkdtemp()) / "codes.json"
 temp_access.CODES_FILE.write_text(json.dumps({"codes": {"good-code-1": "alice"}}), encoding="utf-8")
 
@@ -28,7 +34,7 @@ CSV = "e" + "b2" * 10 + ".csv"
 def signed_in_client() -> TestClient:
     client = TestClient(web_app.app, follow_redirects=False)
     temp_access._failures.clear()
-    client.post("/temp-login", data={"code": "good-code-1"})
+    client.post("/temp-login", data={"code": "good-code-1", "role": "super_manager"})
     return client
 
 

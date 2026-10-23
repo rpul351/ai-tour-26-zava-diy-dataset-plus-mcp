@@ -156,7 +156,6 @@ button { font: inherit; color: inherit; -webkit-tap-highlight-color: transparent
     max-width: 640px;
     text-align: center;
     padding: 12px 0 24px;
-    animation: rise 0.5s ease both;
 }
 .welcome .brand-mark { margin-bottom: 18px; }
 .welcome h2 { margin: 0 0 8px; font-size: clamp(26px, 4.2vw, 36px); font-weight: 700; letter-spacing: -0.03em; line-height: 1.12; }
@@ -310,6 +309,7 @@ button { font: inherit; color: inherit; -webkit-tap-highlight-color: transparent
 .composer .send:disabled, .composer .icon:disabled { opacity: 0.35; cursor: not-allowed; transform: none; }
 .fineprint { margin: 8px 0 0; text-align: center; color: var(--ink-3); font-size: 12px; }
 
+@keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 @keyframes pulse { 0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); } 40% { opacity: 1; transform: scale(1); } }
 
@@ -377,4 +377,106 @@ button { font: inherit; color: inherit; -webkit-tap-highlight-color: transparent
     .table-wrap { overflow: visible; }
     .body table { font-size: 9.5pt; }
     .body th, .body td { white-space: normal; }
+}
+
+/* ---- Sidebar: new chat, search, previous chats, signed-in person ---- */
+.app.with-sidebar { max-width: none; margin: 0; grid-template-columns: 288px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.main { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; height: 100vh; height: 100dvh; }
+.brand-text h2 { margin: 0; font-size: 17px; font-weight: 650; letter-spacing: -0.015em; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-height: 0;
+    padding: max(14px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+    background: var(--surface-2);
+    border-right: 1px solid var(--line);
+}
+.side-brand { display: flex; align-items: center; gap: 12px; padding: 2px 6px 6px; }
+.side-brand .brand-text h1 { font-size: 17px; }
+.side-close, .menu-btn { display: none; }
+.ghost.icon-only { width: 36px; padding: 0; justify-content: center; }
+
+.new-chat {
+    display: flex; align-items: center; gap: 8px; width: 100%; height: 40px; padding: 0 14px;
+    border: 1px solid var(--line-strong); border-radius: 12px; background: var(--surface);
+    color: var(--ink); font-size: 14.5px; font-weight: 600; cursor: pointer; box-shadow: var(--shadow-card);
+    transition: border-color 0.15s ease, transform 0.1s ease;
+}
+.new-chat svg, .search svg, .chat-del svg, .side-user svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.new-chat:hover { border-color: var(--accent); color: var(--accent); }
+.new-chat:active { transform: scale(0.985); }
+
+.search { display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 12px; border-radius: 12px; background: color-mix(in srgb, var(--ink) 6%, transparent); color: var(--ink-3); transition: box-shadow 0.15s ease, background 0.15s ease; }
+.search:focus-within { background: var(--surface); box-shadow: 0 0 0 1.5px var(--accent), 0 0 0 4px var(--accent-soft); }
+.search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--ink); font: inherit; font-size: 15px; }
+.search input::placeholder { color: var(--ink-3); }
+.search input::-webkit-search-cancel-button { cursor: pointer; }
+
+.chat-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; margin: 0 -4px; padding: 2px 4px; overscroll-behavior: contain; }
+.chat-group { margin: 14px 8px 4px; font-size: 11.5px; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); }
+.chat-empty { margin: 18px 10px; font-size: 13.5px; color: var(--ink-3); }
+.chat-item { position: relative; display: flex; align-items: stretch; border-radius: 10px; }
+.chat-item:hover, .chat-item:focus-within { background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.chat-item.active { background: var(--accent-soft); }
+.chat-open { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding: 8px 34px 8px 10px; border: 0; background: transparent; text-align: left; cursor: pointer; border-radius: 10px; }
+.chat-title { max-width: 100%; font-size: 14.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-item.active .chat-title { color: var(--accent); font-weight: 600; }
+.chat-snippet { max-width: 100%; font-size: 12.5px; color: var(--ink-3); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.chat-list mark { background: color-mix(in srgb, #ffd60a 55%, transparent); color: inherit; border-radius: 3px; padding: 0 1px; }
+.chat-del { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); width: 28px; height: 28px; display: grid; place-items: center; border: 0; border-radius: 8px; background: transparent; color: var(--ink-3); cursor: pointer; opacity: 0; transition: opacity 0.12s ease; }
+.chat-item:hover .chat-del, .chat-item:focus-within .chat-del { opacity: 1; }
+.chat-del:hover { background: var(--danger-bg); color: var(--danger-ink); }
+@media (hover: none) { .chat-del { opacity: 0.7; } }
+
+.side-user { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 6px 2px; border-top: 1px solid var(--line); }
+.side-user .who { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.avatar-initial { flex: none; width: 34px; height: 34px; display: grid; place-items: center; border-radius: 50%; background: var(--brand); color: #fff; font-weight: 650; font-size: 14px; }
+.who-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.who-text strong { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.who-text span { font-size: 12.5px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.side-user .ghost { width: 34px; padding: 0; justify-content: center; }
+.scrim { position: fixed; inset: 0; z-index: 20; background: rgba(0, 0, 0, 0.38); -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px); animation: rise 0.2s ease both; }
+
+/* Below tablet width the sidebar becomes a drawer opened from the menu button */
+@media (max-width: 860px) {
+    .app.with-sidebar { grid-template-columns: minmax(0, 1fr); }
+    .menu-btn, .side-close { display: inline-flex; }
+    .sidebar { position: fixed; z-index: 30; inset: 0 auto 0 0; width: min(86vw, 330px); transform: translateX(-104%); transition: transform 0.26s cubic-bezier(0.32, 0.72, 0, 1); box-shadow: var(--shadow-float); }
+    body.side-open .sidebar { transform: none; }
+    .side-brand { justify-content: space-between; }
+    .side-brand .brand-text { flex: 1; }
+    .topbar .brand { gap: 6px; }
+}
+
+/* ---- Sign-in screen ---- */
+body.login { min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; padding: max(20px, env(safe-area-inset-top)) 16px max(20px, env(safe-area-inset-bottom)); }
+.login-card { width: min(100%, 420px); text-align: center; padding: 34px 28px 28px; border: 1px solid var(--line); border-radius: 28px; background: var(--surface); box-shadow: var(--shadow-float); }
+.login-card .brand-mark { margin-bottom: 16px; }
+.login-card h1 { margin: 0 0 6px; font-size: 26px; font-weight: 700; letter-spacing: -0.03em; }
+.login-sub { margin: 0 0 22px; color: var(--ink-3); font-size: 15px; }
+.roles { display: grid; gap: 10px; text-align: left; }
+.role { display: flex; flex-direction: column; gap: 3px; padding: 15px 16px; border: 1px solid var(--line-strong); border-radius: 16px; background: var(--surface); cursor: pointer; transition: transform 0.12s ease, border-color 0.15s ease, background 0.15s ease; }
+.role strong { font-size: 16px; font-weight: 650; letter-spacing: -0.01em; }
+.role span { font-size: 13.5px; color: var(--ink-3); }
+.role:hover { border-color: var(--accent); background: var(--accent-soft); }
+.role:active { transform: scale(0.985); }
+#codeForm { text-align: left; }
+#codeForm[hidden], #roles[hidden] { display: none !important; }
+.chosen { margin: 0 0 14px; font-size: 14px; color: var(--ink-2); text-align: center; }
+.linklike { border: 0; background: none; color: var(--accent); font-size: 14px; font-weight: 500; cursor: pointer; padding: 0 2px; }
+.linklike:hover { text-decoration: underline; }
+#codeForm label { display: block; margin: 0 0 6px 2px; font-size: 13px; font-weight: 600; color: var(--ink-2); }
+#codeForm input[type="password"] { width: 100%; height: 46px; padding: 0 14px; border: 1px solid var(--line-strong); border-radius: 14px; background: var(--surface); color: var(--ink); font: inherit; font-size: 16px; outline: 0; transition: border-color 0.15s ease, box-shadow 0.15s ease; }
+#codeForm input[type="password"]:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+.login-error { min-height: 1.2em; margin: 10px 2px 0; font-size: 13.5px; color: var(--danger-ink); text-align: left; }
+.primary { width: 100%; height: 46px; margin-top: 8px; border: 0; border-radius: 14px; background: var(--accent); color: var(--on-accent); font-size: 16px; font-weight: 600; cursor: pointer; transition: background 0.15s ease, transform 0.1s ease; }
+.primary:hover { background: var(--accent-press); }
+.primary:active { transform: scale(0.985); }
+
+@media print {
+    .sidebar, .scrim, .menu-btn { display: none !important; }
+    .app.with-sidebar { display: block; }
+    .main { display: block; height: auto; }
 }

@@ -56,4 +56,17 @@ test('own charts, downloads and web links still work', () => {
     assert.match(html, /href="https:\/\/example\.com"/);
 });
 
+test('saved chats are grouped for the sidebar by how recent they are', () => {
+    const now = new Date(2026, 9, 23, 15, 0, 0);
+    const at = (daysAgo, hour) => { const d = new Date(2026, 9, 23 - daysAgo, hour, 0, 0); return d.getTime() / 1000; };
+    const chats = [
+        { id: 'a', title: 'a', updated: at(0, 9) }, { id: 'b', title: 'b', updated: at(1, 20) },
+        { id: 'c', title: 'c', updated: at(5, 10) }, { id: 'd', title: 'd', updated: at(40, 10) },
+    ];
+    const groups = R.groupChats(chats, now.getTime());
+    assert.deepStrictEqual(groups.map((g) => g.label), ['Today', 'Yesterday', 'Previous 7 days', 'September 2026']);
+    assert.deepStrictEqual(groups.map((g) => g.chats.length), [1, 1, 1, 1]);
+    assert.deepStrictEqual(R.groupChats([], now.getTime()), []);
+});
+
 console.log(`${passed} passed`);

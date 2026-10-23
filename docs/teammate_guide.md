@@ -108,7 +108,7 @@ It prints one code per name, once. Keep it private. The names must match the acc
 bash scripts/run_agent.sh
 ```
 
-Wait for the line `Ready.` Leave this terminal open. Then open http://127.0.0.1:8005 and sign in with your code. Add `?debug=1` to the address to see every tool call the agent makes.
+Wait for the line `Ready.` Leave this terminal open. Then open http://127.0.0.1:8005, choose your role (Store Manager or Super Manager) and enter your code. Your chats are saved under your name only. Add `?debug=1` to the address to see every tool call the agent makes.
 
 Check the back end at http://127.0.0.1:8006/health. It should say `healthy`, with 17 tools and `semantic_search: ok`.
 

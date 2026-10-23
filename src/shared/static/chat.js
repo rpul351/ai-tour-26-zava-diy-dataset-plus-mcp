@@ -1,4 +1,5 @@
 // Chat page for the Zava Inventory Advisor. Rendering rules live in render.js, the saved transcript in transcript.js.
+// Chats are saved on the server for the signed-in person only; nothing about them is kept in this browser.
 (() => {
     const $ = (id) => document.getElementById(id);
     const messagesEl = $('messages');
@@ -8,19 +9,26 @@
     const sendBtn = $('sendBtn');
     const fileBtn = $('fileBtn');
     const fileInput = $('fileInput');
+    const chatList = $('chatList');
+    const searchInput = $('chatSearch');
+    const sidebar = $('sidebar');
+    const scrim = $('scrim');
+    const titleEl = $('chatTitle');
+    const DEFAULT_TITLE = 'New chat';
 
     let isStreaming = false;
     let uploadedFile = null;
     let source = null;
+    let searchTimer = 0;
 
-    // One id per browser tab, so people using the same server do not share a conversation.
+    // The id of the chat on screen. The server keeps it under the signed-in person, so a guessed id from another account is refused.
     const newId = () => (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2));
-    let sessionId = sessionStorage.getItem('sessionId') || (() => { const id = newId(); sessionStorage.setItem('sessionId', id); return id; })();
+    let chatId = newId();
 
     // Tool calls are technical detail: shown only when the page is opened with ?debug=1 (for demos).
     const SHOW_TOOL_CALLS = new URLSearchParams(window.location.search).has('debug');
 
-    // Every question and final answer, kept in this tab so the chat can be saved. Nothing is sent anywhere.
+    // Every question and final answer of the chat on screen, so it can be saved as a file.
     const transcript = [];
 
     const el = (tag, className, text) => {
@@ -35,6 +43,7 @@
     const scrollToEnd = (force) => { if (force || nearBottom()) messagesEl.scrollTop = messagesEl.scrollHeight; };
 
     function hideWelcome() { if (welcomeEl) welcomeEl.hidden = true; }
+    function setTitle(text) { titleEl.textContent = text || DEFAULT_TITLE; document.title = text ? `${text} \u2013 Zava Inventory Advisor` : 'Zava Inventory Advisor'; }
 
     function setBusy(busy) {
         isStreaming = busy;
@@ -168,6 +177,142 @@
         scrollToEnd(true);
     }
 
+    // ---- Saved chats -------------------------------------------------------------------------------------------------------------
+
+    async function api(path, options) {
+        const response = await fetch(path, { credentials: 'same-origin', ...options });
+        if (response.status === 401) { window.location.href = '/temp-login'; throw new Error('Signed out'); }
+        return response;
+    }
+
+    function highlight(text, query) {
+        const node = el('span');
+        const at = query ? text.toLowerCase().indexOf(query.toLowerCase()) : -1;
+        if (at < 0) { node.textContent = text; return node; }
+        node.append(document.createTextNode(text.slice(0, at)), el('mark', '', text.slice(at, at + query.length)), document.createTextNode(text.slice(at + query.length)));
+        return node;
+    }
+
+    function renderChatList(chats, query) {
+        chatList.textContent = '';
+        if (!chats.length) {
+            chatList.append(el('p', 'chat-empty', query ? 'No chats match your search.' : 'Your chats will appear here.'));
+            return;
+        }
+        const groups = query ? [{ label: `${chats.length} ${chats.length === 1 ? 'result' : 'results'}`, chats }] : ZavaRender.groupChats(chats, Date.now());
+        for (const group of groups) {
+            chatList.append(el('h3', 'chat-group', group.label));
+            for (const chat of group.chats) {
+                const row = el('div', 'chat-item');
+                if (chat.id === chatId) row.classList.add('active');
+                const open = el('button', 'chat-open');
+                open.type = 'button';
+                open.title = chat.title;
+                const titleNode = highlight(chat.title, query);
+                titleNode.className = 'chat-title';
+                open.append(titleNode);
+                if (chat.snippet) {
+                    const snippetNode = highlight(chat.snippet, query);
+                    snippetNode.className = 'chat-snippet';
+                    open.append(snippetNode);
+                }
+                open.addEventListener('click', () => openChat(chat.id));
+                const del = el('button', 'chat-del');
+                del.type = 'button';
+                del.setAttribute('aria-label', `Delete chat: ${chat.title}`);
+                del.title = 'Delete chat';
+                del.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M10 11v6M14 11v6M8 7l1-2h6l1 2M7 7l1 12h8l1-12"/></svg>';
+                del.addEventListener('click', () => removeChat(chat));
+                row.append(open, del);
+                chatList.append(row);
+            }
+        }
+    }
+
+    async function refreshChats() {
+        const query = searchInput.value.trim();
+        try {
+            const response = await api('/api/chats' + (query ? '?q=' + encodeURIComponent(query) : ''));
+            if (!response.ok) return;
+            if (query !== searchInput.value.trim()) return; // a newer search is already running
+            renderChatList((await response.json()).chats || [], query);
+        } catch (_) { /* signed out or offline: leave the list as it is */ }
+    }
+
+    function resetConversation() {
+        if (source) { source.close(); source = null; }
+        transcript.length = 0;
+        uploadedFile = null;
+        fileInput.value = '';
+        messagesEl.querySelectorAll('.message, .file-info, .toolcalls').forEach((node) => node.remove());
+        input.value = '';
+        input.placeholder = 'Ask about stock or sales';
+        autosize();
+        setBusy(false);
+    }
+
+    function newChat() {
+        resetConversation();
+        chatId = newId();
+        setTitle('');
+        if (welcomeEl) welcomeEl.hidden = false;
+        closeSidebar();
+        refreshChats();
+        input.focus();
+    }
+
+    async function openChat(id) {
+        if (id === chatId && transcript.length) { closeSidebar(); return; }
+        const response = await api('/api/chats/' + encodeURIComponent(id));
+        if (!response.ok) { refreshChats(); return; }
+        const chat = await response.json();
+        resetConversation();
+        chatId = chat.id;
+        setTitle(chat.title);
+        hideWelcome();
+        for (const message of chat.messages) {
+            if (message.role === 'user') {
+                addUser(message.content);
+            } else {
+                const view = addAssistant();
+                view.text = message.content;
+                view.thinking.hidden = true;
+                draw(view);
+                addCopy(view);
+            }
+            transcript.push({ role: message.role, text: message.content });
+        }
+        scrollToEnd(true);
+        closeSidebar();
+        refreshChats();
+    }
+
+    async function removeChat(chat) {
+        if (!window.confirm(`Delete this chat?\n\n${chat.title}`)) return;
+        const response = await api('/api/chats/' + encodeURIComponent(chat.id), { method: 'DELETE' });
+        if (response.ok && chat.id === chatId) newChat(); else refreshChats();
+    }
+
+    // ---- Sidebar on small screens --------------------------------------------------------------------------------------------------
+
+    function openSidebar() { document.body.classList.add('side-open'); scrim.hidden = false; }
+    function closeSidebar() { document.body.classList.remove('side-open'); scrim.hidden = true; }
+
+    async function showWho() {
+        try {
+            const response = await api('/api/me');
+            if (!response.ok) return;
+            const me = await response.json();
+            $('userName').textContent = me.name;
+            $('userRole').textContent = me.store ? `${me.role_label} \u00B7 ${me.store}` : me.role_label;
+            $('userInitial').textContent = (me.name || '?').charAt(0).toUpperCase();
+            $('sideUser').hidden = false;
+            $('welcomeTitle').textContent = `What would you like to know, ${me.name.split(' ')[0]}?`;
+        } catch (_) { /* the page still works without the name */ }
+    }
+
+    // ---- Sending a question --------------------------------------------------------------------------------------------------------
+
     async function sendMessage(preset) {
         const message = (preset !== undefined ? preset : input.value).trim();
         if ((!message && !uploadedFile) || isStreaming) return;
@@ -200,6 +345,7 @@
             return;
         }
 
+        if (titleEl.textContent === DEFAULT_TITLE) setTitle(message.length > 60 ? message.slice(0, 59) + '\u2026' : message);
         input.value = '';
         autosize();
 
@@ -214,10 +360,11 @@
             if (source) source.close();
             source = null;
             setBusy(false);
+            refreshChats();
             if (window.matchMedia('(hover: hover)').matches) input.focus();
         };
 
-        source = new EventSource('/chat/stream?' + new URLSearchParams({ message: finalMessage, session_id: sessionId }));
+        source = new EventSource('/chat/stream?' + new URLSearchParams({ message: finalMessage, session_id: chatId }));
         const mine = source;
 
         source.onmessage = (event) => {
@@ -258,22 +405,6 @@
         };
     }
 
-    function newChat() {
-        if (source) { source.close(); source = null; }
-        sessionId = newId();
-        sessionStorage.setItem('sessionId', sessionId);
-        transcript.length = 0;
-        uploadedFile = null;
-        fileInput.value = '';
-        messagesEl.querySelectorAll('.message, .file-info, .toolcalls').forEach((node) => node.remove());
-        if (welcomeEl) welcomeEl.hidden = false;
-        input.value = '';
-        input.placeholder = 'Ask about stock or sales';
-        autosize();
-        setBusy(false);
-        input.focus();
-    }
-
     // Save the conversation as a Markdown file, or print it (the browser can save that as a PDF).
     function saveChat() {
         const text = ZavaTranscript.buildTranscript(transcript, { now: new Date() });
@@ -286,18 +417,34 @@
         setTimeout(() => URL.revokeObjectURL(link.href), 1000);
     }
 
+    async function signOut() {
+        try { await fetch('/logout', { method: 'POST', credentials: 'same-origin' }); } catch (_) { /* go to the sign-in page anyway */ }
+        window.location.href = '/temp-login';
+    }
+
     form.addEventListener('submit', (event) => { event.preventDefault(); sendMessage(); });
     input.addEventListener('input', () => { autosize(); syncSend(); });
     input.addEventListener('keydown', (event) => {
         if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); sendMessage(); }
     });
+    searchInput.addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(refreshChats, 220); });
+    document.addEventListener('keydown', (event) => {
+        if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); openSidebar(); searchInput.focus(); }
+        if (event.key === 'Escape') closeSidebar();
+    });
     document.querySelectorAll('.chip').forEach((chip) => chip.addEventListener('click', () => sendMessage(chip.dataset.prompt)));
     $('newChatBtn').addEventListener('click', newChat);
+    $('menuBtn').addEventListener('click', openSidebar);
+    $('closeSidebar').addEventListener('click', closeSidebar);
+    scrim.addEventListener('click', closeSidebar);
     $('saveChatBtn').addEventListener('click', saveChat);
     $('printChatBtn').addEventListener('click', () => window.print());
+    $('signOutBtn').addEventListener('click', signOut);
     fileBtn.addEventListener('click', () => fileInput.click());
     fileInput.addEventListener('change', handleFileSelection);
 
     syncSend();
+    showWho();
+    refreshChats();
     if (window.matchMedia('(hover: hover)').matches) input.focus();
 })();

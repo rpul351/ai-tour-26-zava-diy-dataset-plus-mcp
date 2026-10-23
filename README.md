@@ -38,7 +38,7 @@ The full step-by-step guide, with the Azure access the owner must grant and a tr
 4. `cp .env.example .env` and fill in the values listed under "Run it" step 2 (the endpoint and deployment names come from the project owner).
 5. `cp src/python/workshop/access_list.example.json src/python/workshop/access_list.json` and put your own name in it (role `super_manager`, or `store_manager` with a `store`).
 6. `cd src/python/web_app && python temp_access.py generate <your-name>` prints your access code once; keep it private. Then `cd ../../..`.
-7. Start: `bash scripts/run_agent.sh`. Leave that terminal open. Wait for "Ready", then open http://127.0.0.1:8005 and sign in with your code.
+7. Start: `bash scripts/run_agent.sh`. Leave that terminal open. Wait for "Ready", then open http://127.0.0.1:8005, choose **Store Manager** or **Super Manager**, and enter your access code. The code only works for the role you have on the access list.
 8. Stop: press Ctrl+C in that terminal, or from another terminal run `bash scripts/run_agent.sh stop`. Check with `bash scripts/run_agent.sh status`.
 
 If it fails to start, the script says why; the logs are `logs/agent_service.out` and `logs/web_app.out`. Port 8006 is the back end only and has no page.
@@ -80,7 +80,7 @@ python tests/audit_grounding.py                              # 29 answers: any p
 
 ### Logs
 
-Every question, tool call, timing, token count and prompt version is appended to `logs/agent_calls.jsonl` (ignored by git). The log holds the questions users ask, so treat it as private.
+Every question, tool call, timing, token count and prompt version is appended to `logs/agent_calls.jsonl` (ignored by git). The log holds the questions users ask, so treat it as private. Saved chats are in `logs/chats.sqlite3` (also ignored by git): each person sees only their own, and they follow the person to any browser. Where the agent's instructions live: `src/python/workshop/prompts.py`.
 
 ### Team testing: who sees what
 
@@ -94,7 +94,7 @@ The agent can give each person their own view. A **super manager** sees all 8 st
 
 Without `ACCESS_LIST_FILE` the service uses the single `RLS_USER_ID` from `.env`, as before.
 
-**Before deploying to Azure, remove the temporary access code:** delete `src/python/web_app/temp_access.py`, `test_temp_access.py` and `temp_access_codes.json`, and the two lines marked `TEMP ACCESS` in `web_app.py`. Keep the access list and the agent service changes: in Azure the signed-in user from the platform replaces the code, and the same list decides who sees what. The agent service must then be reachable only through the web app.
+**Before deploying to Azure, remove the temporary access code:** delete `src/python/web_app/temp_access.py`, `test_temp_access.py` and `temp_access_codes.json`, `src/shared/static/login.html`, and the two lines marked `TEMP ACCESS` in `web_app.py`, and point the sign-in and sign-out redirects in `chat.js` at the platform's. Keep `roles.py` and `chat_store.py`. Keep the access list and the agent service changes: in Azure the signed-in user from the platform replaces the code, and the same list decides who sees what. The agent service must then be reachable only through the web app.
 
 ### Known limits
 

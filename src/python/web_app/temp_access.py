@@ -22,13 +22,15 @@ import time
 from html import escape
 from pathlib import Path
 
+import roles
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 CODES_FILE = Path(__file__).with_name("temp_access_codes.json")
 COOKIE = "zava_temp_user"
 COOKIE_HOURS = 8
-OPEN_PATHS = {"/temp-login", "/health", "/favicon.ico"}
+OPEN_PATHS = {"/temp-login", "/logout", "/health", "/favicon.ico", "/static/styles.css"}
+LOGIN_PAGE = Path(__file__).resolve().parents[2] / "shared" / "static" / "login.html"
 MAX_FAILURES = 5
 FAILURE_WINDOW_SECONDS = 600
 
@@ -67,16 +69,12 @@ def _throttled(ip: str) -> bool:
     return len(recent) >= MAX_FAILURES
 
 
-def _page(message: str = "") -> HTMLResponse:
-    note = f"<p style='color:#b00020'>{escape(message)}</p>" if message else ""
-    return HTMLResponse(
-        "<!doctype html><meta charset='utf-8'><title>Zava Inventory Advisor</title>"
-        "<body style='font-family:sans-serif;max-width:420px;margin:12vh auto;padding:0 16px'>"
-        "<h2>Zava Inventory Advisor</h2><p>Enter the access code you were given.</p>"
-        f"{note}<form method='post' action='/temp-login'>"
-        "<input name='code' type='password' autofocus autocomplete='off' style='width:100%;padding:8px'>"
-        "<button style='margin-top:12px;padding:8px 16px'>Continue</button></form></body>"
-    )
+def _page(message: str = "", role: str = "") -> HTMLResponse:
+    """The sign-in screen. A wrong code keeps the chosen role so the person only retypes the code."""
+    role = role if role in roles.ROLE_LABELS else ""
+    html = LOGIN_PAGE.read_text(encoding="utf-8")
+    html = html.replace("{{ROLE}}", role).replace("{{ERROR}}", escape(message) if role else "").replace("{{ROLE_ERROR}}", "" if role else escape(message))
+    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 
 def install_temp_access(app: FastAPI) -> None:
@@ -89,7 +87,7 @@ def install_temp_access(app: FastAPI) -> None:
         request.state.zava_user = _user_from_cookie(request.cookies.get(COOKIE))
         if request.url.path in OPEN_PATHS or request.state.zava_user:
             return await call_next(request)
-        if request.url.path.startswith("/chat/") or request.method != "GET":
+        if request.url.path.startswith(("/chat/", "/api/")) or request.method != "GET":
             return JSONResponse({"error": "Sign in with an access code first."}, status_code=401)
         return RedirectResponse("/temp-login", status_code=303)
 
@@ -98,19 +96,33 @@ def install_temp_access(app: FastAPI) -> None:
         return _page()
 
     @app.post("/temp-login")
-    async def login(request: Request, code: str = Form("")) -> Response:
+    async def login(request: Request, code: str = Form(""), role: str = Form("")) -> Response:
         ip = request.client.host if request.client else "unknown"
         if _throttled(ip):
-            return _page("Too many wrong codes. Try again in a few minutes.")
+            return _page("Too many wrong codes. Try again in a few minutes.", role)
+        if role not in roles.ROLE_LABELS:
+            return _page("Choose Store Manager or Super Manager first.")
         user = _load_codes().get(code.strip())
         if user is None:
             _failures.setdefault(ip, []).append(time.time())
-            return _page("That code is not valid.")
+            return _page("That code is not valid.", role)
+        person = roles.describe(user)
+        if person is None:
+            return _page("That code is not set up for the agent. Ask the team lead.", role)
+        if person["role"] != role:
+            _failures.setdefault(ip, []).append(time.time())
+            return _page(f"That code is not for a {roles.ROLE_LABELS[role]}. Check the role you chose.", role)
         response = RedirectResponse("/", status_code=303)
         secure = request.headers.get("x-forwarded-proto", request.url.scheme) == "https"
         response.set_cookie(
             COOKIE, _make_cookie(user), max_age=COOKIE_HOURS * 3600, httponly=True, samesite="lax", secure=secure
         )
+        return response
+
+    @app.post("/logout")
+    async def logout() -> Response:
+        response = JSONResponse({"ok": True})
+        response.delete_cookie(COOKIE)
         return response
 
 

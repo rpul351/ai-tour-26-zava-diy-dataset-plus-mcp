@@ -11,55 +11,94 @@
     <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-    <div class="app">
-        <header class="topbar">
-            <div class="brand">
+    <div class="app with-sidebar">
+        <aside class="sidebar" id="sidebar" aria-label="Chats">
+            <div class="side-brand">
                 <span class="brand-mark" aria-hidden="true">Z</span>
                 <div class="brand-text">
-                    <h1>Zava Inventory Advisor</h1>
-                    <p>Live stock and sales, read-only</p>
+                    <h1>Zava</h1>
+                    <p>Inventory Advisor</p>
                 </div>
+                <button type="button" id="closeSidebar" class="ghost icon-only side-close" aria-label="Close menu">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+                </button>
             </div>
-            <nav class="actions" aria-label="Conversation">
-                <button type="button" id="newChatBtn" class="ghost" title="Start a new conversation" aria-label="New chat">
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span>New chat</span>
-                </button>
-                <button type="button" id="saveChatBtn" class="ghost" title="Save this conversation as a Markdown file" aria-label="Save chat">
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7.5 11 12 15.5 16.5 11M5 19h14"/></svg><span>Save</span>
-                </button>
-                <button type="button" id="printChatBtn" class="ghost" title="Print this conversation, or save it as a PDF" aria-label="Print or save as PDF">
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 9V4h10v5M7 17H5a1 1 0 0 1-1-1v-5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v5a1 1 0 0 1-1 1h-2M7 14h10v6H7z"/></svg><span>Print</span>
-                </button>
-            </nav>
-        </header>
 
-        <main class="messages" id="messages" role="log" aria-live="polite" aria-label="Conversation">
-            <section class="welcome" id="welcome">
-                <span class="brand-mark large" aria-hidden="true">Z</span>
-                <h2>What would you like to know?</h2>
-                <p>Ask about stock, sales, products and seasonal patterns. Answers come from the live Zava data.</p>
-                <div class="chips" role="list">
-                    <button type="button" class="chip" role="listitem" data-prompt="Which products have more than 5 years of stock?"><strong>Excess stock</strong><span>Which products have more than 5 years of stock?</span></button>
-                    <button type="button" class="chip" role="listitem" data-prompt="What are the top selling products in the last 12 months?"><strong>Best sellers</strong><span>What are the top selling products in the last 12 months?</span></button>
-                    <button type="button" class="chip" role="listitem" data-prompt="Where is the most capital tied up in excess stock? Show the top 5 as a table."><strong>Capital tied up</strong><span>Where is the most capital tied up? Top 5 as a table.</span></button>
-                    <button type="button" class="chip" role="listitem" data-prompt="Which stores follow the company's seasonal pattern most closely?"><strong>Seasonal pattern</strong><span>Which stores follow the seasonal pattern most closely?</span></button>
+            <button type="button" id="newChatBtn" class="new-chat" title="Start a new conversation">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span>New chat</span>
+            </button>
+
+            <label class="search" for="chatSearch">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4-4"/></svg>
+                <input id="chatSearch" type="search" placeholder="Search chats" aria-label="Search your chats" autocomplete="off" spellcheck="false" maxlength="100">
+            </label>
+
+            <nav class="chat-list" id="chatList" aria-label="Previous chats"></nav>
+
+            <div class="side-user" id="sideUser" hidden>
+                <div class="who">
+                    <span class="avatar-initial" id="userInitial" aria-hidden="true"></span>
+                    <div class="who-text">
+                        <strong id="userName"></strong>
+                        <span id="userRole"></span>
+                    </div>
                 </div>
-            </section>
-        </main>
+                <button type="button" id="signOutBtn" class="ghost" title="Sign out" aria-label="Sign out">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 5H6a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h4M14 8l4 4-4 4M18 12H9"/></svg>
+                </button>
+            </div>
+        </aside>
+        <div class="scrim" id="scrim" hidden></div>
 
-        <footer class="composer-wrap">
-            <form class="composer" id="composer" autocomplete="off">
-                <input type="file" id="fileInput" accept=".txt,.pdf,.doc,.docx,.md" hidden />
-                <button type="button" id="fileBtn" class="icon" title="Attach a file" aria-label="Attach a file">
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m20 11.5-8 8a5 5 0 0 1-7-7l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7L9.5 17.2a1.7 1.7 0 0 1-2.4-2.4l7.4-7.4"/></svg>
-                </button>
-                <textarea id="messageInput" rows="1" placeholder="Ask about stock or sales" aria-label="Message" enterkeyhint="send" maxlength="4000"></textarea>
-                <button type="submit" id="sendBtn" class="send" title="Send" aria-label="Send">
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5"/></svg>
-                </button>
-            </form>
-            <p class="fineprint">Figures are a snapshot of the live data. Check important decisions.</p>
-        </footer>
+        <div class="main">
+            <header class="topbar">
+                <div class="brand">
+                    <button type="button" id="menuBtn" class="ghost icon-only menu-btn" aria-label="Open menu" aria-controls="sidebar">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+                    </button>
+                    <div class="brand-text">
+                        <h2 id="chatTitle">New chat</h2>
+                        <p>Live stock and sales, read-only</p>
+                    </div>
+                </div>
+                <nav class="actions" aria-label="Conversation">
+                    <button type="button" id="saveChatBtn" class="ghost" title="Save this conversation as a Markdown file" aria-label="Save chat">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7.5 11 12 15.5 16.5 11M5 19h14"/></svg><span>Save</span>
+                    </button>
+                    <button type="button" id="printChatBtn" class="ghost" title="Print this conversation, or save it as a PDF" aria-label="Print or save as PDF">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 9V4h10v5M7 17H5a1 1 0 0 1-1-1v-5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v5a1 1 0 0 1-1 1h-2M7 14h10v6H7z"/></svg><span>Print</span>
+                    </button>
+                </nav>
+            </header>
+
+            <main class="messages" id="messages" role="log" aria-live="polite" aria-label="Conversation">
+                <section class="welcome" id="welcome">
+                    <span class="brand-mark large" aria-hidden="true">Z</span>
+                    <h2 id="welcomeTitle">What would you like to know?</h2>
+                    <p>Ask about stock, sales, products and seasonal patterns. Answers come from the live Zava data.</p>
+                    <div class="chips" role="list">
+                        <button type="button" class="chip" role="listitem" data-prompt="Which products have more than 5 years of stock?"><strong>Excess stock</strong><span>Which products have more than 5 years of stock?</span></button>
+                        <button type="button" class="chip" role="listitem" data-prompt="What are the top selling products in the last 12 months?"><strong>Best sellers</strong><span>What are the top selling products in the last 12 months?</span></button>
+                        <button type="button" class="chip" role="listitem" data-prompt="Where is the most capital tied up in excess stock? Show the top 5 as a table."><strong>Capital tied up</strong><span>Where is the most capital tied up? Top 5 as a table.</span></button>
+                        <button type="button" class="chip" role="listitem" data-prompt="Which stores follow the company's seasonal pattern most closely?"><strong>Seasonal pattern</strong><span>Which stores follow the seasonal pattern most closely?</span></button>
+                    </div>
+                </section>
+            </main>
+
+            <footer class="composer-wrap">
+                <form class="composer" id="composer" autocomplete="off">
+                    <input type="file" id="fileInput" accept=".txt,.pdf,.doc,.docx,.md" hidden />
+                    <button type="button" id="fileBtn" class="icon" title="Attach a file" aria-label="Attach a file">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m20 11.5-8 8a5 5 0 0 1-7-7l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7L9.5 17.2a1.7 1.7 0 0 1-2.4-2.4l7.4-7.4"/></svg>
+                    </button>
+                    <textarea id="messageInput" rows="1" placeholder="Ask about stock or sales" aria-label="Message" enterkeyhint="send" maxlength="4000"></textarea>
+                    <button type="submit" id="sendBtn" class="send" title="Send" aria-label="Send">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5"/></svg>
+                    </button>
+                </form>
+                <p class="fineprint">Figures are a snapshot of the live data. Check important decisions.</p>
+            </footer>
+        </div>
     </div>
 
     <script src="/static/marked.min.js"></script>

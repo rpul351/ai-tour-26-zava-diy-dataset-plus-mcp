@@ -7,6 +7,7 @@ import tempfile
 from types import SimpleNamespace
 
 os.environ["AGENT_LOG_DIR"] = tempfile.mkdtemp()  # keep test turns out of the real call log
+os.environ["SCOPE_GATE"] = "off"  # these tests replay fixed model replies; the gate has its own tests below
 
 import agent_service  # noqa: E402
 
@@ -88,6 +89,79 @@ def test_data_tools_of_one_round_run_together_and_the_date_tool_is_not_offered()
     assert results == ["c0", "c1"]
     statuses = [i["status"] for i in items if "status" in i]
     assert statuses[-1] == "Putting the answer together" and len(statuses) == 2
+
+
+class GateModel:
+    """Answers the scope gate with a fixed verdict and the main call with a fixed reply."""
+
+    def __init__(self, verdict, reply="Scope: x\nHere is a stock answer."):
+        self.verdict, self.reply, self.gate_inputs, self.main_calls = verdict, reply, [], 0
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+    async def create(self, model, messages, tools=None, **kwargs):
+        if tools is None:  # the gate sends no tools
+            self.gate_inputs.append(messages[-1]["content"])
+            content = self.verdict
+        else:
+            self.main_calls += 1
+            content = self.reply
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=None))])
+
+
+def run_gated(verdict, message, session, reply="Scope: x\nHere is a stock answer."):
+    agent_service.SCOPE_GATE_ENABLED = True
+    try:
+        model = GateModel(verdict, reply)
+        agent_service.evidence_store[session] = []
+        app = SimpleNamespace(state=SimpleNamespace(openai=model, tools=TOOLS, tool_owners={}))
+
+        async def run():
+            return [item async for item in agent_service.run_turn(app, session, message)]
+
+        items = asyncio.run(run())
+        return "".join(i.get("content", "") for i in items), model
+    finally:
+        agent_service.SCOPE_GATE_ENABLED = False
+
+
+def test_an_unrelated_question_is_declined_politely_with_examples_and_no_tools():
+    text, model = run_gated("OUT", "How do I train a dragon?", "gate-out")
+    assert text.startswith("That's outside what I can help with.") and "Zava stock, sales, products and stores" in text
+    assert "Which products have more than 5 years of stock?" in text  # it says what to ask instead
+    assert agent_service.sessions["gate-out"][-1]["content"] == text  # the decline is part of the chat
+
+
+def test_a_related_question_passes_the_gate_and_is_answered():
+    text, model = run_gated("IN", "stock of sku ending 001", "gate-in")
+    assert text.endswith("Here is a stock answer.") and model.main_calls == 1
+
+
+def test_the_gate_sees_the_earlier_question_so_a_follow_up_is_judged_in_context():
+    agent_service.sessions["gate-follow"] = [{"role": "user", "content": "top sellers in Seattle"}, {"role": "assistant", "content": "ok"}]
+    _, model = run_gated("IN", "and in Kirkland?", "gate-follow")
+    assert "top sellers in Seattle" in model.gate_inputs[0] and "and in Kirkland?" in model.gate_inputs[0]
+
+
+def test_a_broken_gate_never_blocks_a_real_question():
+    class Broken(GateModel):
+        async def create(self, model, messages, tools=None, **kwargs):
+            if tools is None:
+                raise RuntimeError("gate model unavailable")
+            return await super().create(model, messages, tools, **kwargs)
+
+    agent_service.SCOPE_GATE_ENABLED = True
+    try:
+        model = Broken("OUT")
+        agent_service.evidence_store["gate-broken"] = []
+        app = SimpleNamespace(state=SimpleNamespace(openai=model, tools=TOOLS, tool_owners={}))
+
+        async def run():
+            return [item async for item in agent_service.run_turn(app, "gate-broken", "stock of cedar")]
+
+        text = "".join(i.get("content", "") for i in asyncio.run(run()))
+    finally:
+        agent_service.SCOPE_GATE_ENABLED = False
+    assert text.endswith("Here is a stock answer.")
 
 
 def test_clean_answer_is_delivered_without_revision():

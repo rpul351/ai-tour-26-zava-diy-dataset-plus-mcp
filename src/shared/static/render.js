@@ -56,7 +56,28 @@
         return marked.parse(String(text || '')).replace(/<table>/g, '<div class="table-wrap"><table>').replace(/<\/table>/g, '</table></div>');
     }
 
-    const api = { escapeHtml, safeHref, splitScope, scopeLabel, renderMarkdown };
+    // Group saved chats for the sidebar: Today, Yesterday, Previous 7 days, then older ones by month.
+    function groupChats(chats, now) {
+        const today = new Date(now); today.setHours(0, 0, 0, 0);
+        const day = 86400000;
+        const groups = [];
+        const add = (label, chat) => {
+            let group = groups[groups.length - 1];
+            if (!group || group.label !== label) { group = { label, chats: [] }; groups.push(group); }
+            group.chats.push(chat);
+        };
+        for (const chat of chats) {
+            const when = new Date(chat.updated * 1000);
+            const age = today.getTime() - new Date(when).setHours(0, 0, 0, 0);
+            if (age <= 0) add('Today', chat);
+            else if (age <= day) add('Yesterday', chat);
+            else if (age <= 7 * day) add('Previous 7 days', chat);
+            else add(when.toLocaleString('en', { month: 'long', year: 'numeric' }), chat);
+        }
+        return groups;
+    }
+
+    const api = { escapeHtml, safeHref, splitScope, scopeLabel, renderMarkdown, groupChats };
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
     else root.ZavaRender = api;
 })(typeof window !== 'undefined' ? window : globalThis);
