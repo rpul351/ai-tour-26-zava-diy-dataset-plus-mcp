@@ -74,12 +74,14 @@
         thinking.setAttribute('role', 'status');
         thinking.setAttribute('aria-label', 'Working on your answer');
         thinking.append(el('i'), el('i'), el('i'));
+        const status = el('span', 'status', 'Thinking\u2026');
+        thinking.append(status);
         bubble.append(scope, body, thinking);
         stack.append(bubble);
         row.append(avatar, stack);
         messagesEl.append(row);
         scrollToEnd(true);
-        return { row, stack, bubble, scope, body, thinking, text: '' };
+        return { row, stack, bubble, scope, body, thinking, status, text: '' };
     }
 
     // Draw the answer so far. Called as text arrives and once more when it is complete.
@@ -234,6 +236,8 @@
                     if (!toolsEl) { toolsEl = el('div', 'toolcalls'); messagesEl.insertBefore(toolsEl, view.row); }
                     addToolCall(toolsEl, parsed.tool);
                 }
+            } else if (parsed.status) {
+                view.status.textContent = parsed.status + '\u2026';
             } else if (parsed.content) {
                 view.text += parsed.content;
                 schedule();

@@ -257,6 +257,7 @@ button { font: inherit; color: inherit; -webkit-tap-highlight-color: transparent
 .thinking i { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); animation: pulse 1.2s ease-in-out infinite; }
 .thinking i:nth-child(2) { animation-delay: 0.15s; }
 .thinking i:nth-child(3) { animation-delay: 0.3s; }
+.thinking .status { margin-left: 6px; color: var(--ink-3); font-size: 13.5px; }
 .msg-actions { margin: 4px 0 0 6px; height: 26px; opacity: 0; transition: opacity 0.15s ease; }
 .message.assistant:hover .msg-actions, .msg-actions:focus-within { opacity: 1; }
 .msg-actions button { border: 0; background: transparent; color: var(--ink-3); font-size: 12.5px; padding: 3px 8px; border-radius: 8px; cursor: pointer; }

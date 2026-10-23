@@ -33,6 +33,15 @@ logging.basicConfig(level=logging.ERROR)
 AGENT_SERVICE_URL = "http://127.0.0.1:8006"
 
 
+class FreshStaticFiles(StaticFiles):
+    """Static files a browser must check with the server each time, so a new page never runs an old script."""
+
+    async def get_response(self, path: str, scope):  # type: ignore[override]
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 class WebApp:
     """Handles all web interface functionality for the AI Agent Chat application."""
     
@@ -47,7 +56,7 @@ class WebApp:
     def _setup_static_files(self) -> None:
         """Setup static file serving."""
         static_dir = Path(__file__).parent.parent.parent / "shared" / "static"
-        self.app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+        self.app.mount("/static", FreshStaticFiles(directory=str(static_dir)), name="static")
     
     def _setup_routes(self) -> None:
         """Setup all web routes."""
@@ -62,9 +71,12 @@ class WebApp:
     
     async def get_chat_page(self) -> HTMLResponse:
         """Serve the chat HTML page."""
-        html_file = Path(__file__).parent.parent.parent / "shared" / "static" / "index.html"
-        with html_file.open("r") as f:
-            return HTMLResponse(content=f.read())
+        static_dir = Path(__file__).parent.parent.parent / "shared" / "static"
+        html = (static_dir / "index.html").read_text(encoding="utf-8")
+        # A version in each asset address changes whenever a file changes, so no browser keeps an old script or style sheet.
+        version = int(max(f.stat().st_mtime for f in static_dir.iterdir() if f.suffix in (".js", ".css", ".html")))
+        html = re.sub(r'((?:src|href)="/static/[^"?]+)"', rf'\1?v={version}"', html)
+        return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
     
     async def get_favicon(self) -> FileResponse:
         """Serve the favicon.ico file."""
@@ -168,6 +180,8 @@ class WebApp:
                                         # Convert agent service response format to web format
                                         if data.get("tool"):
                                             yield f"data: {json.dumps({'tool': data['tool']})}\n\n"
+                                        elif data.get("status"):
+                                            yield f"data: {json.dumps({'status': data['status']})}\n\n"
                                         elif data.get("content"):
                                             assistant_message += data["content"]
                                             yield f"data: {json.dumps({'content': data['content']})}\n\n"

@@ -40,6 +40,56 @@ def ask(replies, session_id, evidence=None):
     return text, model, items
 
 
+class ToolCallingModel:
+    """Asks for two data tools in one round, then answers."""
+
+    def __init__(self):
+        self.sent_tools = []
+        self.sent = []
+        self.round = 0
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+    async def create(self, model, messages, tools, **kwargs):
+        self.sent_tools.append([t["function"]["name"] for t in tools])
+        self.sent.append([dict(m) for m in messages])
+        self.round += 1
+        if self.round == 1:
+            calls = [SimpleNamespace(type="function", id=f"c{i}", function=SimpleNamespace(name=f"slow_{n}", arguments="{}")) for i, n in enumerate("ab")]
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=None, tool_calls=calls))])
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="Both lookups are done.", tool_calls=None))])
+
+
+class SlowOwner:
+    async def call_tool(self, name, arguments):
+        await asyncio.sleep(0.4)
+        return SimpleNamespace(content=[SimpleNamespace(text=f'{{"tool": "{name}"}}')], isError=False)
+
+
+def test_data_tools_of_one_round_run_together_and_the_date_tool_is_not_offered():
+    import time
+
+    tools = [{"type": "function", "function": {"name": n, "description": "", "parameters": {}}} for n in ("slow_a", "slow_b", "get_current_utc_date")]
+    model = ToolCallingModel()
+    owner = SlowOwner()
+    app = SimpleNamespace(state=SimpleNamespace(openai=model, tools=tools, tool_owners={"slow_a": owner, "slow_b": owner}))
+    agent_service.evidence_store["parallel"] = []
+
+    async def run():
+        return [item async for item in agent_service.run_turn(app, "parallel", "question")]
+
+    started = time.perf_counter()
+    items = asyncio.run(run())
+    elapsed = time.perf_counter() - started
+    assert elapsed < 0.7, elapsed  # two 0.4 s tools in turn would take 0.8 s
+    assert "".join(i.get("content", "") for i in items) == "Both lookups are done."
+    assert "get_current_utc_date" not in model.sent_tools[0] and "slow_a" in model.sent_tools[0]
+    assert [i["tool"]["name"] for i in items if "tool" in i] == ["slow_a", "slow_b"]  # reported in the order asked
+    results = [m["tool_call_id"] for m in model.sent[1] if m.get("role") == "tool"]
+    assert results == ["c0", "c1"]
+    statuses = [i["status"] for i in items if "status" in i]
+    assert statuses[-1] == "Putting the answer together" and len(statuses) == 2
+
+
 def test_clean_answer_is_delivered_without_revision():
     text, model, items = ask(["No figures here."], "clean")
     assert text == "No figures here."

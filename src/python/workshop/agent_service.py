@@ -491,6 +491,25 @@ def config_problems() -> list[str]:
     return problems
 
 
+TOOL_STATUS = {
+    "find_products": "Looking up products",
+    "get_products_by_name": "Looking up products",
+    "semantic_search_products": "Searching the catalogue",
+    "product_sales": "Checking sales",
+    "recent_order_lines": "Checking the latest orders",
+    "rank_capital_tied_up": "Checking excess stock",
+    "stock_cover_ranking": "Checking stock cover",
+    "compare_store_coverage": "Comparing stores",
+    "seasonal_baseline_check": "Checking seasonal patterns",
+    "year_over_year_summary": "Comparing years",
+    "store_seasonal_alignment": "Comparing store patterns",
+    "frequently_bought_together": "Finding products bought together",
+    "make_chart": "Drawing the chart",
+    "make_export": "Preparing your file",
+    "calculate": "Working out the figures",
+}
+
+
 def sse(payload: dict[str, Any]) -> str:
     return f"data: {json.dumps(payload)}\n\n"
 
@@ -907,7 +926,7 @@ async def run_turn(
         yield {"content": greeting}
         yield {"done": True}
         return
-    tools = [*tools, CHART_TOOL, EXPORT_TOOL, CALC_TOOL]
+    tools = [*(t for t in tools if t["function"]["name"] != "get_current_utc_date"), CHART_TOOL, EXPORT_TOOL, CALC_TOOL]  # today's date is in the prompt
     history = sessions.setdefault(session_id, [])
     evidence = evidence_store.setdefault(session_id, [])
     revisions = 0
@@ -996,61 +1015,74 @@ async def run_turn(
                 ],
             }
         )
-        for call in calls:
-            owner = owners.get(call.function.name)
+        yield {"status": TOOL_STATUS.get(calls[0].function.name, "Looking up the data")}
+
+        async def call_data_tool(call: Any, owner: Any) -> tuple[str, Any, int]:
+            began = time.perf_counter()
             arguments: Any = call.function.arguments
-            started = time.perf_counter()
-            if call.function.name == CHART_TOOL_NAME:
-                text = await make_chart_result(call.function.arguments, evidence, message)
-                try:
-                    arguments = json.loads(call.function.arguments or "{}")
-                except json.JSONDecodeError:
-                    pass
-            elif call.function.name == CALC_TOOL_NAME:
-                text = calculate_result(call.function.arguments, evidence, message)
-                try:
-                    arguments = json.loads(call.function.arguments or "{}")
-                except json.JSONDecodeError:
-                    pass
-            elif call.function.name == EXPORT_TOOL_NAME:
-                text = await make_export_result(call.function.arguments, evidence, message)
-                try:
-                    spec_in = json.loads(call.function.arguments or "{}")
-                    arguments = {k: spec_in.get(k) for k in ("format", "title")} | {"row_count": len(spec_in.get("rows") or [])}
-                except (json.JSONDecodeError, AttributeError):
-                    pass
-            elif owner is None:
-                text = f"Tool error: unknown tool {call.function.name}."
-            else:
-                try:
-                    arguments = json.loads(call.function.arguments or "{}")
-                    text = tool_result_text(
-                        await asyncio.wait_for(owner.call_tool(call.function.name, arguments), TOOL_TIMEOUT_SECONDS)
-                    )
-                except json.JSONDecodeError:
-                    text = "Tool error: arguments were not valid JSON."
-                except asyncio.TimeoutError:
-                    text = f"Tool error: {call.function.name} did not answer within {TOOL_TIMEOUT_SECONDS} seconds."
-            elapsed_ms = round((time.perf_counter() - started) * 1000)
-            tool_count += 1
-            record(
-                "tool_call",
-                session_id,
-                **log,
-                tool=call.function.name,
-                arguments=arguments,
-                result=text[:MAX_LOGGED_RESULT_CHARS],
-                result_chars=len(text),
-                error=text.startswith("Tool error"),
-                ms=elapsed_ms,
-            )
-            if call.function.name not in (CHART_TOOL_NAME, EXPORT_TOOL_NAME, CALC_TOOL_NAME):
-                turn_results.append(text)
-            if call.function.name not in (CHART_TOOL_NAME, EXPORT_TOOL_NAME):
-                evidence.append(text)
-                del evidence[:-MAX_EVIDENCE_ITEMS]
-            working.append({"role": "tool", "tool_call_id": call.id, "content": text})
-            yield {"tool": {"name": call.function.name, "arguments": arguments, "ms": elapsed_ms}}
+            try:
+                arguments = json.loads(call.function.arguments or "{}")
+                text = tool_result_text(await asyncio.wait_for(owner.call_tool(call.function.name, arguments), TOOL_TIMEOUT_SECONDS))
+            except json.JSONDecodeError:
+                text = "Tool error: arguments were not valid JSON."
+            except asyncio.TimeoutError:
+                text = f"Tool error: {call.function.name} did not answer within {TOOL_TIMEOUT_SECONDS} seconds."
+            return text, arguments, round((time.perf_counter() - began) * 1000)
+
+        service_tools = (CHART_TOOL_NAME, CALC_TOOL_NAME, EXPORT_TOOL_NAME)
+        pending = {c.id: asyncio.ensure_future(call_data_tool(c, owners[c.function.name])) for c in calls if c.function.name not in service_tools and owners.get(c.function.name) is not None}
+        try:
+            for call in calls:
+                owner = owners.get(call.function.name)
+                arguments: Any = call.function.arguments
+                started = time.perf_counter()
+                if call.function.name == CHART_TOOL_NAME:
+                    text = await make_chart_result(call.function.arguments, evidence, message)
+                    try:
+                        arguments = json.loads(call.function.arguments or "{}")
+                    except json.JSONDecodeError:
+                        pass
+                elif call.function.name == CALC_TOOL_NAME:
+                    text = calculate_result(call.function.arguments, evidence, message)
+                    try:
+                        arguments = json.loads(call.function.arguments or "{}")
+                    except json.JSONDecodeError:
+                        pass
+                elif call.function.name == EXPORT_TOOL_NAME:
+                    text = await make_export_result(call.function.arguments, evidence, message)
+                    try:
+                        spec_in = json.loads(call.function.arguments or "{}")
+                        arguments = {k: spec_in.get(k) for k in ("format", "title")} | {"row_count": len(spec_in.get("rows") or [])}
+                    except (json.JSONDecodeError, AttributeError):
+                        pass
+                elif owner is None:
+                    text = f"Tool error: unknown tool {call.function.name}."
+                else:
+                    text, arguments, data_ms = await pending[call.id]
+                elapsed_ms = data_ms if call.id in pending else round((time.perf_counter() - started) * 1000)
+                tool_count += 1
+                record(
+                    "tool_call",
+                    session_id,
+                    **log,
+                    tool=call.function.name,
+                    arguments=arguments,
+                    result=text[:MAX_LOGGED_RESULT_CHARS],
+                    result_chars=len(text),
+                    error=text.startswith("Tool error"),
+                    ms=elapsed_ms,
+                )
+                if call.function.name not in (CHART_TOOL_NAME, EXPORT_TOOL_NAME, CALC_TOOL_NAME):
+                    turn_results.append(text)
+                if call.function.name not in (CHART_TOOL_NAME, EXPORT_TOOL_NAME):
+                    evidence.append(text)
+                    del evidence[:-MAX_EVIDENCE_ITEMS]
+                working.append({"role": "tool", "tool_call_id": call.id, "content": text})
+                yield {"tool": {"name": call.function.name, "arguments": arguments, "ms": elapsed_ms}}
+        finally:
+            for task in pending.values():
+                task.cancel()
+        yield {"status": "Putting the answer together"}
 
     record(
         "turn",
