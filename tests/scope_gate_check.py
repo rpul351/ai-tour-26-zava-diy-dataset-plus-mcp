@@ -35,7 +35,9 @@ IN = [
     "total sales for Kirkland in 2024", "Which stores can I see?", "export the list as csv", "do we sell unicorn saddles",
 ]
 FOLLOW_UPS = [("and in Kirkland?", "top selling products in Seattle"), ("why?", "Which store has the most excess stock?"), ("show that as a chart", "units sold by store in 2023"),
-              ("what about last month?", "How are paint sales doing?"), ("can you make that a table", "Which products have more than 5 years of stock?"), ("top 3 only", "best sellers this year")]
+              ("what about last month?", "How are paint sales doing?"), ("can you make that a table", "Which products have more than 5 years of stock?"), ("top 3 only", "best sellers this year"),
+              ("where did you get the word herbicide?", "recommend weed-control products for my garden"), ("why did you show me fertilizers?", "products to get rid of weeds"),
+              ("from where you got this name", "stock of glyphosate"), ("how did you get that number?", "How much stock do we have?")]
 FOLLOW_OUT = [("now tell me a joke", "top selling products in Seattle"), ("thanks, and how do I train a dragon?", "stock of sku ending 001")]
 
 
