@@ -50,6 +50,10 @@ CATEGORIES_TABLE = "categories"
 PRODUCT_TYPES_TABLE = "product_types"
 INVENTORY_TABLE = "inventory"
 
+# An inventory advisor has no need for individual customers' personal details.
+PERSONAL_DETAILS = re.compile(r"(?i)\b(first_name|last_name|full_name|customer_name|email|e_mail|phone)\b")
+PERSONAL_COLUMN = re.compile(r"(?i)first_name|last_name|full_name|customer_name|e_?mail|phone")
+
 
 PERIODS = (
     "today", "yesterday", "last_7_days", "last_30_days", "last_90_days", "last_12_months",
@@ -784,6 +788,16 @@ class PostgreSQLSchemaProvider:
 
     async def execute_query(self, sql_query: str, rls_user_id: str) -> str:
         """Execute a SQL query and return results in LLM-friendly JSON format."""
+        if PERSONAL_DETAILS.search(sql_query):
+            return json.dumps(
+                {
+                    "error": "Individual customers' personal details (names, emails, phone numbers) are not available. "
+                    "Aggregate figures such as customer counts, units and revenue are.",
+                    "results": [],
+                    "row_count": 0,
+                    "columns": [],
+                }
+            )
         conn = None
         try:
             conn = await self.get_connection()
@@ -792,7 +806,8 @@ class PostgreSQLSchemaProvider:
                 "SELECT set_config('app.current_rls_user_id', $1, false)", rls_user_id)
 
             # logger.info(f"\n🔍 Executing PostgreSQL query: {sql_query}\n")
-            rows = await conn.fetch(sql_query)
+            async with conn.transaction(readonly=True):  # the database refuses any write
+                rows = await conn.fetch(sql_query)
 
             if not rows:
                 return json.dumps(
@@ -805,13 +820,15 @@ class PostgreSQLSchemaProvider:
                 )
 
             # Convert asyncpg Records to list of dictionaries (much simpler!)
-            results = [dict(row) for row in rows]
-            columns = list(rows[0].keys()) if rows else []
+            withheld = sorted({c for c in rows[0].keys() if PERSONAL_COLUMN.search(c)})  # e.g. SELECT * from customers
+            results = [{k: v for k, v in dict(row).items() if k not in withheld} for row in rows]
+            columns = [c for c in rows[0].keys() if c not in withheld]
 
             # Return LLM-friendly format
-            return json.dumps(
-                {"results": results, "row_count": len(results), "columns": columns}, indent=2, default=str
-            )
+            payload = {"results": results, "row_count": len(results), "columns": columns}
+            if withheld:
+                payload["personal_details_withheld"] = withheld
+            return json.dumps(payload, indent=2, default=str)
 
         except Exception as e:
             return json.dumps(
@@ -897,7 +914,14 @@ class PostgreSQLSchemaProvider:
                         ELSE stock_level
                     END AS stock_gap_vs_safe_level
                 FROM inventory_snapshot
-                ORDER BY risk_status DESC, days_of_cover ASC, stock_level ASC
+                ORDER BY
+                    CASE
+                        WHEN avg_daily_units > 0 AND stock_level <= ($3::int * avg_daily_units) THEN 1
+                        WHEN avg_daily_units > 0 AND stock_level <= ($4::int * avg_daily_units) THEN 2
+                        WHEN avg_daily_units > 0 THEN 3
+                        ELSE 4
+                    END,
+                    days_of_cover ASC NULLS LAST, stock_level ASC
                 LIMIT 200
             """
 
@@ -935,7 +959,16 @@ class PostgreSQLSchemaProvider:
 
             results = [dict(row) for row in rows]
             columns = list(rows[0].keys())
-            return json.dumps({"results": results, "row_count": len(results), "columns": columns}, indent=2, default=str)
+            payload = {"scope": await self._describe_scope(conn, store_id), "results": results, "row_count": len(results), "columns": columns}
+            counts = {s: sum(r["risk_status"] == s for r in results) for s in ("critical", "warning", "healthy", "unknown")}
+            payload["risk_status_counts_in_list"] = counts
+            if len(results) == 200:
+                payload["note"] = (
+                    "Rows are listed most at risk first (critical, warning, healthy, then products with no sales in the window) "
+                    "and capped at 200. Because the worst come first, if the list holds no critical or warning rows, no product is at that level; "
+                    "the list is otherwise not a sample of all products, so do not draw conclusions about overall demand from it."
+                )
+            return json.dumps(payload, indent=2, default=str)
         except Exception as e:
             return json.dumps(
                 {

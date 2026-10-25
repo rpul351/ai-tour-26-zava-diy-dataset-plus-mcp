@@ -86,11 +86,13 @@ trap cleanup INT TERM EXIT
 
 echo "Starting the agent service (and its three tool servers)..."
 ( cd "$WORKSHOP" && ACCESS_LIST_FILE="$ACCESS_LIST" exec python agent_service.py ) > "$LOGS/agent_service.out" 2>&1 &
-echo $! >> "$PIDS"
+AGENT_PID=$!
+echo $AGENT_PID >> "$PIDS"
 
 echo "Starting the web app..."
 ( cd "$WEB" && exec python web_app.py ) > "$LOGS/web_app.out" 2>&1 &
-echo $! >> "$PIDS"
+WEB_PID=$!
+echo $WEB_PID >> "$PIDS"
 
 # Wait until the agent says it is healthy (up to 90 seconds).
 healthy=""
@@ -118,7 +120,7 @@ echo "  Logs: logs/agent_service.out and logs/web_app.out"
 echo "Press Ctrl+C to stop everything."
 
 # Stay in the foreground until Ctrl+C, or until one of the two exits on its own.
-while kill -0 "$(sed -n 1p "$PIDS")" 2>/dev/null && kill -0 "$(sed -n 2p "$PIDS")" 2>/dev/null; do
+while kill -0 "$AGENT_PID" 2>/dev/null && kill -0 "$WEB_PID" 2>/dev/null; do
   sleep 2
 done
 echo "One of the services stopped. Check the logs in logs/."

@@ -148,6 +148,9 @@ async def execute_sales_query(
 ) -> str:
     """Always fetch table schemas first, use exact column names, join related tables for clarity, aggregate results, limit output to 20 rows, and explain that results are limited for readability.
 
+    Read-only: a single SELECT query. The database refuses any write. Individual customers' personal details
+    (names, emails, phone numbers) are not available; aggregate figures such as customer counts are.
+
     Args:
         postgresql_query: A well-formed PostgreSQL query.
 

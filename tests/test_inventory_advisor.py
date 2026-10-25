@@ -436,6 +436,34 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
         coverage = await self.call("compare_store_coverage", GLOBAL, category_name="HARDWARE")
         self.assertTrue(any("not a shortage" in n.lower() for n in coverage["notes"]))
 
+    # Hand-written SQL: the database refuses writes, and customers' personal details are never returned
+    async def test_overview_lists_the_most_at_risk_rows_first_and_states_its_scope(self):
+        severity = {"critical": 1, "warning": 2, "healthy": 3, "unknown": 4}
+        out = await self.call("get_inventory_optimization_overview", GLOBAL, days_window=90)
+        order = [severity[r["risk_status"]] for r in out["results"]]
+        self.assertEqual(order, sorted(order))
+        self.assertTrue(out["scope"]["covers_all_stores"])
+        self.assertEqual(sum(out["risk_status_counts_in_list"].values()), out["row_count"])
+        one = await self.call("get_inventory_optimization_overview", KIRKLAND, days_window=90)
+        self.assertEqual(one["scope"]["store_count"], 1)
+
+    # Hand-written SQL: the database refuses writes, and customers' personal details are never returned
+    async def test_query_tool_is_read_only_and_withholds_personal_details(self):
+        before = (await sql_rows(GLOBAL, "SELECT COUNT(*) n FROM retail.orders"))[0]["n"]
+        for write in ("DELETE FROM retail.orders", "UPDATE retail.inventory SET stock_level = 0", "DROP TABLE retail.orders"):
+            out = json.loads(await self.db.execute_query(write, rls_user_id=GLOBAL))
+            self.assertIn("error", out, write)
+        self.assertEqual((await sql_rows(GLOBAL, "SELECT COUNT(*) n FROM retail.orders"))[0]["n"], before)
+        for asks in ("SELECT email FROM retail.customers", "SELECT first_name || ' ' || last_name AS n FROM retail.customers"):
+            out = json.loads(await self.db.execute_query(asks, rls_user_id=GLOBAL))
+            self.assertIn("not available", out["error"], asks)
+        out = json.loads(await self.db.execute_query("SELECT * FROM retail.customers LIMIT 3", rls_user_id=GLOBAL))
+        self.assertEqual(out["row_count"], 3)
+        self.assertTrue(set(out["personal_details_withheld"]) >= {"first_name", "last_name", "email", "phone"})
+        self.assertFalse(any("@" in str(v) for row in out["results"] for v in row.values()))
+        counted = json.loads(await self.db.execute_query("SELECT COUNT(DISTINCT customer_id) AS n FROM retail.orders", rls_user_id=GLOBAL))
+        self.assertGreater(int(counted["results"][0]["n"]), 0)
+
 
 def _port_open(port: int) -> bool:
     with socket.socket() as s:
