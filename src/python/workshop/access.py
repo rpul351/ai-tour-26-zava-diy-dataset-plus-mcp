@@ -26,6 +26,14 @@ def normalise(name: str | None) -> str:
     return (name or "").strip().lower()
 
 
+def store_names(entry: dict) -> list[str]:
+    """The stores of a store manager entry: \"stores\" (a list) or the older single \"store\"."""
+    stores = entry.get("stores", [entry.get("store")])
+    if not isinstance(stores, list):
+        raise ValueError("stores must be a list")
+    return [s for s in stores if s is not None]
+
+
 def describe_viewer(rls_id: str | None, user: str | None = None) -> str:
     """One sentence for the model saying who is asking, taken from the identity the service chose."""
     if rls_id == GLOBAL_RLS_ID:
@@ -38,12 +46,19 @@ def describe_viewer(rls_id: str | None, user: str | None = None) -> str:
 
 
 class AccessList:
-    def __init__(self, users: dict[str, str]) -> None:
-        self.users = users
+    def __init__(self, users: dict[str, str | list[str]]) -> None:
+        # A person may hold several identities (one per store); the first is the default.
+        self.users = {name: [ids] if isinstance(ids, str) else list(ids) for name, ids in users.items()}
 
-    def rls_id_for(self, user: str | None) -> str | None:
-        """The identity for this person, or None if they are not on the list."""
-        return self.users.get(normalise(user)) or None
+    def rls_id_for(self, user: str | None, store: str | None = None) -> str | None:
+        """The identity for this person and chosen store, or None if they are not on the list or may not see that store."""
+        ids = self.users.get(normalise(user))
+        if not ids:
+            return None
+        if not store:
+            return ids[0]
+        wanted = STORE_RLS_IDS.get(store)
+        return wanted if wanted in ids else None
 
 
 def load_access_list(path: Path) -> AccessList:
@@ -52,16 +67,19 @@ def load_access_list(path: Path) -> AccessList:
     entries = data["users"]
     if not isinstance(entries, dict) or not entries:
         raise ValueError("the access list has no users")
-    users: dict[str, str] = {}
+    users: dict[str, list[str]] = {}
     for name, entry in entries.items():
         role = entry.get("role")
         if role == "super_manager":
-            users[normalise(name)] = GLOBAL_RLS_ID
+            users[normalise(name)] = [GLOBAL_RLS_ID]
         elif role == "store_manager":
-            store = entry.get("store")
-            if store not in STORE_RLS_IDS:
-                raise ValueError(f"{name}: unknown store {store!r}. Use one of: {', '.join(STORE_RLS_IDS)}")
-            users[normalise(name)] = STORE_RLS_IDS[store]
+            stores = store_names(entry)
+            for store in stores:
+                if store not in STORE_RLS_IDS:
+                    raise ValueError(f"{name}: unknown store {store!r}. Use one of: {', '.join(STORE_RLS_IDS)}")
+            if not stores:
+                raise ValueError(f"{name}: a store manager needs a store or a list of stores")
+            users[normalise(name)] = [STORE_RLS_IDS[s] for s in stores]
         else:
             raise ValueError(f"{name}: role must be super_manager or store_manager")
     return AccessList(users)

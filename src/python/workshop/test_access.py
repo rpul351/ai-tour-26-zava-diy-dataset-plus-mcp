@@ -32,6 +32,21 @@ def test_store_manager_gets_only_that_stores_identity():
     assert acl.rls_id_for("sam") != GLOBAL_RLS_ID
 
 
+def test_a_manager_with_two_stores_gets_one_identity_per_chosen_store():
+    kirkland, everett = STORE_RLS_IDS["Zava Retail Kirkland"], STORE_RLS_IDS["Zava Retail Everett"]
+    acl = load_access_list(write({"sam": {"role": "store_manager", "stores": ["Zava Retail Kirkland", "Zava Retail Everett"]}}))
+    assert acl.rls_id_for("sam") == kirkland  # the first store is the default
+    assert acl.rls_id_for("sam", "Zava Retail Everett") == everett
+    assert acl.rls_id_for("sam", "Zava Retail Seattle") is None  # a store that is not theirs is refused, not swapped
+    assert acl.rls_id_for("sam", "not a store") is None
+
+
+def test_a_bad_stores_list_is_refused():
+    assert raises(write({"x": {"role": "store_manager", "stores": ["Zava Retail Kirkland", "Zava Retail Nowhere"]}}))
+    assert raises(write({"x": {"role": "store_manager", "stores": []}}))
+    assert raises(write({"x": {"role": "store_manager", "stores": "Zava Retail Kirkland"}}))
+
+
 def test_names_are_not_case_or_space_sensitive():
     acl = load_access_list(write({"  Alice ": {"role": "super_manager"}}))
     assert acl.rls_id_for("ALICE") == GLOBAL_RLS_ID and acl.rls_id_for(" alice") == GLOBAL_RLS_ID

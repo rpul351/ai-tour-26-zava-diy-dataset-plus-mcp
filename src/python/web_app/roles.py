@@ -12,7 +12,7 @@ sys.path.append(str(Path(__file__).parent.parent / "workshop"))
 
 import json  # noqa: E402
 
-from access import GLOBAL_RLS_ID, STORE_RLS_IDS, normalise  # noqa: E402
+from access import GLOBAL_RLS_ID, STORE_RLS_IDS, normalise, store_names  # noqa: E402
 
 ACCESS_LIST_FILE = Path(os.getenv("ACCESS_LIST_FILE") or Path(__file__).parent.parent / "workshop" / "access_list.json")
 
@@ -44,16 +44,21 @@ def describe(user: str | None) -> dict | None:
     role = entry.get("role")
     if role not in ROLE_LABELS:
         return None
-    store = entry.get("store") if role == "store_manager" else None
-    if role == "store_manager" and store not in STORE_RLS_IDS:
+    try:
+        stores = store_names(entry) if role == "store_manager" else []
+    except ValueError:
         return None
+    if role == "store_manager" and (not stores or any(s not in STORE_RLS_IDS for s in stores)):
+        return None
+    short = [s.replace("Zava Retail ", "") for s in stores]
     return {
         "user": key,
         "name": key.replace("-", " ").title(),
         "role": role,
         "role_label": ROLE_LABELS[role],
-        "store": store.replace("Zava Retail ", "") if store else None,
-        "sees": "all 8 stores" if role == "super_manager" else store.replace("Zava Retail ", "") if store else "",
+        "store": short[0] if short else None,
+        "stores": stores,
+        "sees": "all 8 stores" if role == "super_manager" else " and ".join(short),
     }
 
 

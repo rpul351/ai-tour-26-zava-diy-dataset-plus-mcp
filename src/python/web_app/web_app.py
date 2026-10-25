@@ -150,7 +150,7 @@ class WebApp:
         removed = await asyncio.to_thread(chat_store.delete_chat, user, chat_id) if chat_store.valid_id(chat_id) else False
         return self._private({"ok": True}) if removed else self._private({"error": "Chat not found."}, 404)
 
-    async def stream_chat(self, request: Request, message: str = "", session_id: str = "") -> StreamingResponse:
+    async def stream_chat(self, request: Request, message: str = "", session_id: str = "", store: str = "") -> StreamingResponse:
         """Stream chat responses by proxying to the agent service."""
         if not message.strip():
             return StreamingResponse(
@@ -173,7 +173,7 @@ class WebApp:
             )
 
         return StreamingResponse(
-            self._generate_stream(message, session_id, getattr(request.state, "zava_user", None)),
+            self._generate_stream(message, session_id, getattr(request.state, "zava_user", None), store[:100] or None),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache", 
@@ -184,7 +184,9 @@ class WebApp:
             },
         )
     
-    async def _generate_stream(self, message: str, session_id: str, user: str | None = None) -> AsyncGenerator[str, None]:
+    async def _generate_stream(
+        self, message: str, session_id: str, user: str | None = None, store: str | None = None
+    ) -> AsyncGenerator[str, None]:
         """Generate streaming response by proxying to agent service."""
         saving = bool(user) and session_id != "default"
         try:
@@ -196,6 +198,7 @@ class WebApp:
                 request_data = {
                     "message": message,
                     "session_id": session_id,
+                    "store": store,
                     "history": earlier,
                 }
                 

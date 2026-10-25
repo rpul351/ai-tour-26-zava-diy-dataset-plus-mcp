@@ -20,6 +20,8 @@
     let uploadedFile = null;
     let source = null;
     let searchTimer = 0;
+    // Set only for a manager with more than one store; the server checks it against the access list.
+    let selectedStore = '';
 
     // The id of the chat on screen. The server keeps it under the signed-in person, so a guessed id from another account is refused.
     const newId = () => (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2));
@@ -304,7 +306,14 @@
             if (!response.ok) return;
             const me = await response.json();
             $('userName').textContent = me.name;
-            $('userRole').textContent = me.store ? `${me.role_label} \u00B7 ${me.store}` : me.role_label;
+            $('userRole').textContent = me.store ? `${me.role_label} \u00B7 ${me.sees}` : me.role_label;
+            if (me.stores && me.stores.length > 1) {
+                const select = $('storeSelect');
+                for (const name of me.stores) select.appendChild(new Option(name.replace('Zava Retail ', ''), name));
+                selectedStore = select.value;
+                select.addEventListener('change', () => { selectedStore = select.value; newChat(); });
+                $('storePick').hidden = false;
+            }
             $('userInitial').textContent = (me.name || '?').charAt(0).toUpperCase();
             $('sideUser').hidden = false;
             $('welcomeTitle').textContent = `What would you like to know, ${me.name.split(' ')[0]}?`;
@@ -364,7 +373,7 @@
             if (window.matchMedia('(hover: hover)').matches) input.focus();
         };
 
-        source = new EventSource('/chat/stream?' + new URLSearchParams({ message: finalMessage, session_id: chatId }));
+        source = new EventSource('/chat/stream?' + new URLSearchParams({ message: finalMessage, session_id: chatId, store: selectedStore }));
         const mine = source;
 
         source.onmessage = (event) => {

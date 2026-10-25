@@ -297,6 +297,8 @@ class ChatTurn(BaseModel):
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     session_id: str = Field(default="default", max_length=100)
+    # The store a manager with several stores is asking about. Checked against the access list, never trusted.
+    store: str | None = Field(default=None, max_length=100)
     # Earlier messages of a saved chat. Used only when the agent has no memory of this chat (after a restart or when it is reopened).
     history: list[ChatTurn] = Field(default_factory=list, max_length=40)
 
@@ -1088,13 +1090,15 @@ async def chat_stream(request: ChatRequest, x_zava_user: str | None = Header(def
             session_key = limit_key = request.session_id
             if ACCESS_LIST is not None:
                 user = normalise(x_zava_user)
-                rls_user_id = ACCESS_LIST.rls_id_for(user)
+                rls_user_id = ACCESS_LIST.rls_id_for(user, request.store)
                 if rls_user_id is None:
                     record("denied", request.session_id, user=user or None)
-                    yield sse({"error": "You are not on the access list for this agent."})
+                    yield sse({"error": "You are not on the access list for this agent, or not for that store."})
                     return
-                # Sessions and limits belong to the person, so nobody can read or use up another's.
+                # Sessions and limits belong to the person (and store), so nobody can read or use up another's.
                 session_key, limit_key = f"{user}:{request.session_id}", user
+                if request.store:
+                    session_key = f"{user}:{rls_user_id}:{request.session_id}"
             if request.history and session_key not in sessions:
                 sessions[session_key] = [{"role": t.role, "content": t.content} for t in request.history][-MAX_STORED_MESSAGES:]
             wait = rate_limit_wait(limit_key)

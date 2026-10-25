@@ -414,6 +414,10 @@ button { font: inherit; color: inherit; -webkit-tap-highlight-color: transparent
 .search input::placeholder { color: var(--ink-3); }
 .search input::-webkit-search-cancel-button { cursor: pointer; }
 
+.store-pick { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-3); }
+.store-pick[hidden] { display: none; }
+.store-pick select { flex: 1; min-width: 0; height: 36px; padding: 0 10px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); font: inherit; font-size: 14px; }
+
 .chat-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; margin: 0 -4px; padding: 2px 4px; overscroll-behavior: contain; }
 .chat-group { margin: 14px 8px 4px; font-size: 11.5px; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); }
 .chat-empty { margin: 18px 10px; font-size: 13.5px; color: var(--ink-3); }
