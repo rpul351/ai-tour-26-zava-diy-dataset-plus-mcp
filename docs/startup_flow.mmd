@@ -1,0 +1,23 @@
+flowchart TD
+    A[scripts/run_agent.sh] --> B[agent_service.py :8006]
+    A --> C[web_app.py :8005]
+    B --> P[prompts.py]
+    B --> AC[access.py + access_list.json]
+    B --> V[answer_verifier.py]
+    B --> CH[charts.py]
+    B --> EX[exports.py]
+    B -->|starts one set per person, 3 child processes| M1[mcp_server/sales_analysis/sales_analysis.py]
+    B --> M2[mcp_server/customer_sales/customer_sales.py]
+    B --> M3[mcp_server/customer_sales/customer_sales_semantic_search.py]
+    M1 --> D1[sales_analysis_postgres.py]
+    M2 --> D2[customer_sales_postgres.py]
+    M3 --> D2
+    M3 --> E[customer_sales_semantic_search_text_embeddings.py]
+    D1 --> DB[(Postgres zava, row-level security)]
+    D2 --> DB
+    E --> AZ[Azure OpenAI embeddings]
+    B --> OAI[Azure OpenAI gpt-5-mini]
+    C --> TA[temp_access.py: login]
+    C --> R[roles.py]
+    C --> CS[chat_store.py -> logs/chats.sqlite3]
+    C --> ST[src/shared/static: index.html, chat.js, render.js, styles.css]
