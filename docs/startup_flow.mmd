@@ -1,63 +1,26 @@
 flowchart TD
-    RUN["scripts/run_agent.sh"]
-
-    subgraph BROWSER["Browser: src/shared/static"]
-        LOGIN["login.html<br/>access code form"]
-        PAGE["index.html, chat.js, render.js, styles.css"]
-    end
-
-    subgraph WEBAPP["Web app, port 8005: src/python/web_app"]
-        WEB["web_app.py<br/>stream_chat and _generate_stream"]
-        TA["temp_access.py<br/>sign-in cookie sets zava_user"]
-        ROLES["roles.py<br/>role and stores for /api/me"]
-        STORE["chat_store.py<br/>logs/chats.sqlite3"]
-    end
-
-    subgraph AGENT["Agent service, port 8006: src/python/workshop"]
-        CS["agent_service.py<br/>chat_stream"]
-        ACC["access.py<br/>access_list.json"]
-        RT["agent_service.py<br/>run_turn"]
-        PR["prompts.py"]
-        AV["answer_verifier.py"]
-        CH["charts.py"]
-        EX["exports.py"]
-    end
-
-    subgraph TOOLS["Tool servers started by agent_service.py over stdio: src/python/mcp_server"]
-        M1["sales_analysis/sales_analysis.py"]
-        M2["customer_sales/customer_sales.py"]
-        M3["customer_sales/customer_sales_semantic_search.py"]
-    end
-
-    RUN -->|"starts"| WEB
-    RUN -->|"starts with ACCESS_LIST_FILE"| CS
-
-    LOGIN -->|"POST /temp-login"| TA
-    TA -->|"cookie becomes request.state.zava_user"| WEB
-    WEB --> ROLES
-    PAGE -->|"1. GET /api/me and /api/chats"| WEB
-    PAGE -->|"2. GET /chat/stream?message, session_id, store<br/>EventSource, server-sent events"| WEB
-    WEB -->|"3. save the question, read earlier messages"| STORE
-    WEB -->|"4. POST http://127.0.0.1:8006/chat/stream with httpx<br/>JSON body: message, session_id, store, history<br/>header: X-Zava-User"| CS
-    CS -->|"5. rls_id_for user and store"| ACC
-    CS -->|"6. run_turn"| RT
-    RT -->|"system prompt and scope gate prompt"| PR
-    RT -->|"7. chat completions with the tools"| AOAI["Azure OpenAI gpt-5-mini"]
-    RT -->|"8. call_tool over stdio, one set per person"| M1
-    RT --> M2
-    RT --> M3
-    RT -->|"9. verify the draft, rewrite up to twice"| AV
-    RT -->|"make_chart and make_export write files"| CH
-    RT --> EX
-    RT -->|"10. SSE events: status, tool, content, file_info, done"| WEB
-    WEB -->|"11. save the answer, forward the events, then DONE"| PAGE
-    WEB -.->|"imports CHART_DIR and EXPORT_DIR to serve /charts and /exports"| CH
-    WEB -.-> EX
-
-    M1 --> D1["sales_analysis_postgres.py"]
-    M2 --> D2["customer_sales_postgres.py"]
+    U[Browser chat page] -->|GET /chat/stream| C
+    A[scripts/run_agent.sh] --> B[agent_service.py :8006]
+    A --> C[web_app.py :8005]
+    C -->|HTTP POST /chat/stream with X-Zava-User header| B
+    B -->|streams answer events back| C
+    B --> P[prompts.py]
+    B --> AC[access.py + access_list.json]
+    B --> V[answer_verifier.py]
+    B --> CH[charts.py]
+    B --> EX[exports.py]
+    B -->|starts one set per person, 3 child processes| M1[mcp_server/sales_analysis/sales_analysis.py]
+    B --> M2[mcp_server/customer_sales/customer_sales.py]
+    B --> M3[mcp_server/customer_sales/customer_sales_semantic_search.py]
+    M1 --> D1[sales_analysis_postgres.py]
+    M2 --> D2[customer_sales_postgres.py]
     M3 --> D2
-    M3 --> E["customer_sales_semantic_search_text_embeddings.py"]
-    D1 --> DB[("PostgreSQL zava<br/>row-level security")]
+    M3 --> E[customer_sales_semantic_search_text_embeddings.py]
+    D1 --> DB[(Postgres zava, row-level security)]
     D2 --> DB
-    E --> AZE["Azure OpenAI text-embedding-3-small"]
+    E --> AZ[Azure OpenAI embeddings]
+    B --> OAI[Azure OpenAI gpt-5-mini]
+    C --> TA[temp_access.py: login]
+    C --> R[roles.py]
+    C --> CS[chat_store.py -> logs/chats.sqlite3]
+    C --> ST[src/shared/static: index.html, chat.js, render.js, styles.css]
